@@ -34,6 +34,20 @@
             @"Library/Application Support/YYBIntelLauncher/bin/launch-windows-app"];
 }
 
+- (BOOL)isWindowsModeRunning:(NSString *)mode {
+    NSString *helper = [NSHomeDirectory()
+        stringByAppendingPathComponent:
+            @"Library/Application Support/YYBIntelLauncher/bin/windows-app-process.py"];
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:helper]) return NO;
+    NSTask *checkTask = [[NSTask alloc] init];
+    checkTask.executableURL = [NSURL fileURLWithPath:helper];
+    checkTask.arguments = @[@"--check", mode];
+    NSError *error = nil;
+    if (![checkTask launchAndReturnError:&error]) return NO;
+    [checkTask waitUntilExit];
+    return checkTask.terminationStatus == 0;
+}
+
 - (void)showLaunchError:(NSString *)message {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleCritical;
@@ -94,6 +108,16 @@
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
     self.terminating = YES;
+    NSString *mode = self.launchArguments.firstObject;
+    if ([mode isEqualToString:@"netease"] &&
+        [self isWindowsModeRunning:@"netease-game"]) {
+        // Sky asks FeverGames for its login ticket after its window appears.
+        // Detach instead of killing the bridge so closing the launcher's Dock
+        // icon cannot turn that late ticket hand-off into a fake network error.
+        self.launchTask.terminationHandler = nil;
+        self.launchTask = nil;
+        return NSTerminateNow;
+    }
     // Stop the event-pump bridge first so it cannot recreate helper
     // processes while the app-specific cleanup is running.
     if (self.launchTask.running) {

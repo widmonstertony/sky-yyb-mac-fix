@@ -14,9 +14,11 @@ ditto "$PROJECT_DIR/launch-windows-app" "$BIN_DIR/launch-windows-app"
 ditto "$PROJECT_DIR/sync-launchpad-apps.py" "$BIN_DIR/sync-launchpad-apps.py"
 ditto "$PROJECT_DIR/apply-intel-retina.py" "$BIN_DIR/apply-intel-retina.py"
 ditto "$PROJECT_DIR/download-sky.py" "$BIN_DIR/download-sky.py"
+ditto "$PROJECT_DIR/sky-dock-watch.py" "$BIN_DIR/sky-dock-watch.py"
 ditto "$PROJECT_DIR/windows-app-process.py" "$BIN_DIR/windows-app-process.py"
 chmod +x "$BIN_DIR/launch-windows-app" "$BIN_DIR/sync-launchpad-apps.py" \
   "$BIN_DIR/apply-intel-retina.py" "$BIN_DIR/download-sky.py" \
+  "$BIN_DIR/sky-dock-watch.py" \
   "$BIN_DIR/windows-app-process.py"
 
 clang -fobjc-arc -O2 -Wall -Wextra -framework Cocoa \

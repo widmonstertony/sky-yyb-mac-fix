@@ -69,6 +69,7 @@ case "$mode" in
     fever_root="$prefix/drive_c/Program Files/FeverGames"
     fever_candidates=("$fever_root"/*/FeverGamesInstaller.exe(N.om[1]))
     fever_target="${fever_candidates[1]:-}"
+    fever_launcher="$fever_root/FeverGamesLauncher.exe"
     target="$prefix/drive_c/FeverApps/sky/Sky.exe"
     log_file="$log_dir/sky.log"
     launch_args=(--start_from_launcher=1)
@@ -86,12 +87,17 @@ if [[ -z "$target" || ! -f "$target" ]]; then
 fi
 
 process_helper="$support_root/bin/windows-app-process.py"
+mkdir -p "$log_dir"
+if [[ "$mode" == "netease" && -x "$support_root/bin/sky-dock-watch.py" ]]; then
+  # A game started by FeverGames is not a macOS process. Attach its generated
+  # app as soon as Sky.exe appears so it gets its own Dock icon and Quit item.
+  nohup "$support_root/bin/sky-dock-watch.py" \
+    >>"$log_dir/sky-dock-watch.log" 2>&1 </dev/null &!
+fi
 if [[ "${YYB_DOCK_HOST:-0}" == "1" && -x "$process_helper" ]] && \
    "$process_helper" --check "$mode"; then
   exec "$process_helper" --wait "$mode"
 fi
-
-mkdir -p "$log_dir"
 
 if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; then
   # preferences.sav is created only after Sky's first run. Re-applying here
@@ -106,13 +112,6 @@ if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; th
   # soon as the game creates preferences.sav and later exits.
   nohup "$support_root/bin/apply-intel-retina.py" --watch-fps --fps 60 \
     >>"$log_dir/retina.log" 2>&1 </dev/null &!
-fi
-
-if [[ "$mode" == "netease-game" && -n "$fever_target" ]]; then
-  if ! pgrep -if "$fever_target" >/dev/null 2>&1; then
-    YYB_DOCK_HOST=0 "$support_root/bin/launch-windows-app" netease
-    sleep 8
-  fi
 fi
 
 if [[ "$mode" == "netease" && -x "$support_root/bin/download-sky.py" ]]; then
@@ -156,6 +155,44 @@ if [[ "$engine_cold_start" == true ]]; then
   # On this engine the server socket appears first, while wineboot finishes
   # about 12 seconds later. Give the cold boot a conservative margin.
   sleep 14
+fi
+
+if [[ "$mode" == "netease-game" ]]; then
+  # Never launch Sky.exe naked. Its NetEase build obtains an account ticket
+  # from FeverGames over local IPC; without that official hand-off UniSDK
+  # returns 202 and the game misleadingly reports a network problem.
+  if [[ -z "$fever_target" || ! -f "$fever_launcher" ]]; then
+    show_error "网易启动器不完整" "找不到负责登录交接的网易启动器组件。"
+    exit 1
+  fi
+  if ! "$process_helper" --check netease; then
+    if [[ -d "/Applications/网易游戏启动器.app" ]]; then
+      /usr/bin/open -g "/Applications/网易游戏启动器.app"
+    else
+      YYB_DOCK_HOST=0 "$support_root/bin/launch-windows-app" netease
+    fi
+    for _ in {1..240}; do
+      "$process_helper" --check netease && break
+      sleep 0.25
+    done
+  fi
+  if ! "$process_helper" --check netease; then
+    show_error "网易启动器没有就绪" "请先打开网易游戏启动器并保持登录，再打开光·遇。"
+    exit 1
+  fi
+
+  cd "${fever_launcher:h}"
+  nohup "$bridge" "$fever_launcher" \
+    "fevergames://mygame/?gameId=63&autoRun=1" \
+    >>"$log_dir/sky.log" 2>&1 </dev/null &!
+  for _ in {1..1200}; do
+    if "$process_helper" --check netease-game; then
+      exec "$process_helper" --wait netease-game
+    fi
+    sleep 0.25
+  done
+  show_error "光·遇没有启动" "网易启动器已经打开；请在其中点击开始游戏。"
+  exit 1
 fi
 
 cd "${target:h}"

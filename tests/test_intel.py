@@ -239,6 +239,9 @@ class IntelFixTests(unittest.TestCase):
         self.assertIn("NSApplicationActivationPolicyRegular", host)
         self.assertIn("applicationShouldTerminate", host)
         self.assertIn('mode" == "--stop"', launcher)
+        self.assertIn("isWindowsModeRunning", host)
+        self.assertIn("sky-dock-watch.py", launcher)
+        self.assertIn("fevergames://mygame/?gameId=63&autoRun=1", launcher)
 
     def test_process_helper_scopes_each_windows_app(self):
         module = load_script(
@@ -248,11 +251,13 @@ class IntelFixTests(unittest.TestCase):
             " 101 C:\\FeverApps\\sky\\Sky.exe --start_from_launcher=1\n"
             " 102 C:\\Program Files (x86)\\Steam\\Steam.exe\n"
             " 103 C:\\Program Files\\FeverGames\\1.0\\FeverGamesInstaller.exe\n"
+            " 104 /prefix/drive_c/FeverApps/sky/Sky.exe --start_from_launcher=1\n"
+            " 105 /prefix/drive_c/Program Files/FeverGames/1.0/FeverGamesInstaller.exe\n"
         )
         with mock.patch.object(module.subprocess, "check_output", return_value=listing):
-            self.assertEqual(set(module.processes("netease-game")), {101})
+            self.assertEqual(set(module.processes("netease-game")), {101, 104})
             self.assertEqual(set(module.processes("steam")), {102})
-            self.assertEqual(set(module.processes("netease")), {103})
+            self.assertEqual(set(module.processes("netease")), {103, 105})
 
 
 if __name__ == "__main__":

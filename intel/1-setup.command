@@ -164,6 +164,7 @@ chmod +x "$PROJECT_DIR/wineserver-wrapper" \
   "$PROJECT_DIR/launch-windows-app" \
   "$PROJECT_DIR/apply-intel-retina.py" \
   "$PROJECT_DIR/download-sky.py" \
+  "$PROJECT_DIR/sky-dock-watch.py" \
   "$PROJECT_DIR/windows-app-process.py" \
   "$PROJECT_DIR/sync-launchpad-apps.py"
 

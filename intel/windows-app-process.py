@@ -13,15 +13,22 @@ import time
 MARKERS = {
     "steam": (
         r"\steam\steam.exe",
+        "/steam/steam.exe",
         "steamwebhelper.exe",
         r"\steam\steamservice.exe",
     ),
     "netease": (
         r"\fevergamesinstaller.exe",
+        "/fevergamesinstaller.exe",
         r"\fevergameslauncher.exe",
+        "/fevergameslauncher.exe",
         r"\fevergamesweb.exe",
+        "/fevergamesweb.exe",
     ),
-    "netease-game": (r"\feverapps\sky\sky.exe",),
+    "netease-game": (
+        r"\feverapps\sky\sky.exe",
+        "/feverapps/sky/sky.exe",
+    ),
 }
 
 
