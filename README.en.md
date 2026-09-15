@@ -6,7 +6,7 @@ It preserves the required Fever Games login flow, enables true Retina backing, r
 
 See the [Chinese README](README.md) for the verified configuration, one-click instructions, limitations, safety notes, and troubleshooting.
 
-Quick start: install and open [Tencent YYB for macOS](https://sj.qq.com/download) once (choose the Apple-silicon Mac build), download this repository, then double-click `install.command`. On M2/M4, open NetEase Fever normally and press **Start Game** for Sky. `launch.command` opens that verified path; YYB's standalone Sky shortcut may return `errCode:-1` on some systems and is not the recommended entry.
+Quick start: install and open [Tencent YYB for macOS](https://sj.qq.com/download) once (choose the Apple-silicon Mac build), download this repository, then double-click `install.command`. On M2/M4, open NetEase Fever normally and press **Start Game** for Sky. `launch.command` opens that verified path. On the verified M4 setup, the standalone Launchpad Sky icon is wrapped so it opens or focuses Fever instead of invoking YYB's broken child shortcut and returning `errCode:-1`; the original executable is backed up and restorable.
 
 The binary patch is applied only when the chip is exactly Apple M2 or Apple M4 and the local DLL exactly matches the verified build. M2/M4 variants and unknown YYB engine builds are rejected rather than patched by fixed offset.
 

@@ -6,6 +6,26 @@ original="$2"
 shift 2
 
 user_home="$HOME"
+
+# YYB 0.8.0 can generate a standalone Sky bundle that always fails with
+# errCode:-1 on the verified M4 setup, even while Fever is already running.
+# Keep the Launchpad icon useful by routing it to the working authenticated
+# Fever flow.  Do this before the legacy injected-shim checks: exact M4 systems
+# use the verified winevulkan patch and intentionally have no shim.
+if [[ "$mode" == "child" ]]; then
+    child_app="${original%%.app/*}.app"
+    shortcuts_root="${child_app:h}"
+    parent_app="$shortcuts_root/com.tencent.macexe.com.45a7ca33.app"
+    if [[ -d "$parent_app" ]]; then
+        # Address it by bundle id first so repeated clicks focus an already
+        # running copy even when YYB has mirrored the same app in two folders.
+        /usr/bin/open -b com.tencent.yybmac.app.com.tencent.macexe.com.45a7ca33 \
+            || /usr/bin/open "$parent_app"
+        exit 0
+    fi
+    exec "$original" "$@"
+fi
+
 prefix="$user_home/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
 engine_root="$user_home/Library/Application Support/com.tencent.yybmac/ExeEngineDownload"
 shim="$user_home/Library/Application Support/SkyYYBMacFix/compat/libSkyYYBGPUCompat.dylib"
@@ -55,20 +75,6 @@ if ! compat_engine_running; then
         exit 76
     fi
     /bin/sleep 3
-fi
-
-if [[ "$mode" == "child" ]]; then
-    child_app="${original%%.app/*}.app"
-    shortcuts_root="${child_app:h}"
-    parent_app="$shortcuts_root/com.tencent.macexe.com.45a7ca33.app"
-    if [[ -d "$parent_app" ]]; then
-        /usr/bin/open -n "$parent_app"
-        # Fever 1.18 ignores the generated child's autoRun request on this YYB
-        # engine and leaves its helper at 99%. Route the icon to the working
-        # parent login flow instead; Start Game then uses this same compatible
-        # Wine server and keeps NetEase authentication/anti-cheat intact.
-        exit 0
-    fi
 fi
 
 exec "$original" "$@"

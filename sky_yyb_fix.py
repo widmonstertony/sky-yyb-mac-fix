@@ -867,15 +867,18 @@ def sign_generated_shortcut(app: Path) -> None:
         raise FixError(f"无法更新应用宝本地快捷入口 {app.name}：" + (detail[-1] if detail else "签名失败"))
 
 
-def install_shortcut_wrappers(backups: BackupSet) -> list[str]:
+def install_shortcut_wrappers(
+    backups: BackupSet, packages: list[str] | None = None
+) -> list[str]:
     if not is_apple_m4():
         return []
     ensure_shortcut_wrapper_assets()
     ensure_private_dir(SHORTCUT_BACKUP_DIR)
-    packages = [PACKAGE_PARENT]
-    sky_package = find_sky_package()
-    if sky_package:
-        packages.append(sky_package)
+    if packages is None:
+        packages = [PACKAGE_PARENT]
+        sky_package = find_sky_package()
+        if sky_package:
+            packages.append(sky_package)
     installed = 0
     for package in packages:
         for app in all_shortcuts_for(package):
@@ -1087,6 +1090,11 @@ def apply_fix(fps: int) -> list[str]:
             restored = restore_shortcut_wrappers()
             if restored:
                 changes.append(f"恢复 {restored} 个应用宝原始入口，使用 M2 同款正常启动链路")
+            sky_package = find_sky_package()
+            if detected_chip() == "Apple M4" and sky_package:
+                redirected = install_shortcut_wrappers(backups, [sky_package])
+                if redirected:
+                    changes.append("启动台光遇图标改走已验证的网易平台登录链路")
         else:
             if ensure_gpu_compat():
                 changes.append("Apple M4 Vulkan 设备兼容层")
@@ -1179,6 +1187,13 @@ def status() -> int:
     if is_apple_m4():
         if detected_chip() == "Apple M4":
             checks["Apple M4 Vulkan 兼容补丁"] = verified_winevulkan_patch_active()
+            sky_package = find_sky_package()
+            sky_entries = all_shortcuts_for(sky_package) if sky_package else []
+            checks["启动台光遇入口"] = bool(sky_entries) and SHORTCUT_CONTROLLER.exists() and all(
+                is_shortcut_wrapper(app / "Contents/MacOS/YYBPackage")
+                and (app / "Contents/MacOS" / SHORTCUT_ORIGINAL_NAME).exists()
+                for app in sky_entries
+            )
         else:
             checks["Apple M4 GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
             parent_entries = all_shortcuts_for(PACKAGE_PARENT)

@@ -155,6 +155,34 @@ class FixTests(unittest.TestCase):
             expected.append(app)
         self.assertEqual(self.module.all_shortcuts_for(package), expected)
 
+    def test_m4_can_wrap_only_the_broken_sky_shortcut(self):
+        child_package = self.module.PACKAGE_SKY_PREFIX + "fixture"
+        apps = {}
+        for package in (self.module.PACKAGE_PARENT, child_package):
+            app = self.module.YYB_INTERNAL_SHORTCUTS / f"{package}.app"
+            executable = app / "Contents/MacOS/YYBPackage"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(("original-" + package).encode())
+            with (app / "Contents/Info.plist").open("wb") as stream:
+                plistlib.dump({"YYBPackageName": package}, stream)
+            apps[package] = executable
+
+        self.module.SHORTCUT_WRAPPER.parent.mkdir(parents=True)
+        wrapper = b"test-" + self.module.SHORTCUT_MARKER
+        self.module.SHORTCUT_WRAPPER.write_bytes(wrapper)
+        self.module.is_apple_m4 = lambda: True
+        self.module.ensure_shortcut_wrapper_assets = lambda: None
+        self.module.sign_generated_shortcut = lambda _app: None
+
+        backups = self.module.BackupSet()
+        changes = self.module.install_shortcut_wrappers(backups, [child_package])
+        self.assertTrue(changes)
+        self.assertEqual(apps[self.module.PACKAGE_PARENT].read_bytes(),
+                         ("original-" + self.module.PACKAGE_PARENT).encode())
+        self.assertEqual(apps[child_package].read_bytes(), wrapper)
+        sibling = apps[child_package].with_name(self.module.SHORTCUT_ORIGINAL_NAME)
+        self.assertEqual(sibling.read_bytes(), ("original-" + child_package).encode())
+
     def test_m2_vulkan_transform_is_exact_and_idempotent(self):
         end = max(
             offset + len(original)
