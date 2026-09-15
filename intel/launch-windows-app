@@ -14,6 +14,14 @@ engine_server="$engine/Contents/MacOS/wineserver"
 dxvk="$engine/Contents/Frameworks/render/dxvk/wine"
 log_dir="$support_root/logs"
 
+if [[ "$mode" == "--stop" ]]; then
+  stop_mode="${extra_args[1]:-}"
+  if [[ -x "$support_root/bin/windows-app-process.py" ]]; then
+    exec "$support_root/bin/windows-app-process.py" --stop "$stop_mode"
+  fi
+  exit 0
+fi
+
 show_error() {
   /usr/bin/osascript -e "display alert \"$1\" message \"$2\" as critical" >/dev/null 2>&1 || true
 }
@@ -77,6 +85,12 @@ if [[ -z "$target" || ! -f "$target" ]]; then
   exit 1
 fi
 
+process_helper="$support_root/bin/windows-app-process.py"
+if [[ "${YYB_DOCK_HOST:-0}" == "1" && -x "$process_helper" ]] && \
+   "$process_helper" --check "$mode"; then
+  exec "$process_helper" --wait "$mode"
+fi
+
 mkdir -p "$log_dir"
 
 if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; then
@@ -96,7 +110,7 @@ fi
 
 if [[ "$mode" == "netease-game" && -n "$fever_target" ]]; then
   if ! pgrep -if "$fever_target" >/dev/null 2>&1; then
-    "$support_root/bin/launch-windows-app" netease
+    YYB_DOCK_HOST=0 "$support_root/bin/launch-windows-app" netease
     sleep 8
   fi
 fi
@@ -145,4 +159,7 @@ if [[ "$engine_cold_start" == true ]]; then
 fi
 
 cd "${target:h}"
+if [[ "${YYB_DOCK_HOST:-0}" == "1" ]]; then
+  exec "$bridge" "$target" "${launch_args[@]}" "${extra_args[@]}" >>"$log_file" 2>&1
+fi
 nohup "$bridge" "$target" "${launch_args[@]}" "${extra_args[@]}" >>"$log_file" 2>&1 </dev/null &!

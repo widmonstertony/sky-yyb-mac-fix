@@ -170,12 +170,27 @@ def patched_registry_texts() -> tuple[str, str]:
     user = upsert_reg_value(user, mac_driver, "CursorClippingLocksWindows", '"N"')
     user = upsert_reg_value(user, mac_driver, "UseConfinementCursorClipping", '"N"')
 
+    # Retina mode exposes the panel's physical pixel grid to Windows. At the
+    # default 96 DPI a 1280x800 Windows window therefore occupies only
+    # 640x400 macOS points. Report 192 DPI so DPI-aware launchers keep their
+    # normal physical size while drawing into the full 2x backing surface.
+    user = upsert_reg_value(
+        user, "Control Panel\\\\Desktop", "LogPixels", "dword:000000c0"
+    )
+    user = upsert_reg_value(
+        user, "Control Panel\\\\Desktop", "Win8DpiScaling", "dword:00000001"
+    )
+    user = upsert_reg_value(
+        user, "Software\\\\Wine\\\\Fonts", "LogPixels", "dword:000000c0"
+    )
+
     layers = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers"
     executables = [
         r"C:\\FeverApps\\sky\\Sky.exe",
         r"C:\\Program Files\\FeverGames\\FeverGamesLauncher.exe",
         r"C:\\Program Files (x86)\\Steam\\Steam.exe",
         r"C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe",
+        r"C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
     ]
     for version in installed_fever_versions():
         for name in (
@@ -211,6 +226,12 @@ def patched_registry_texts() -> tuple[str, str]:
     # gameid from the per-user setting/channel section above, not HKLM.
     fever_machine = "Software\\\\FeverGames\\\\FeverGamesInstaller"
     system = delete_reg_value(system, fever_machine, "gameid")
+    system = upsert_reg_value(
+        system,
+        "System\\\\ControlSet001\\\\Hardware Profiles\\\\Current\\\\Software\\\\Fonts",
+        "LogPixels",
+        "dword:000000c0",
+    )
     return user, system
 
 

@@ -26,5 +26,9 @@
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>YYBLaunchArguments</key>
+  <array>
+    <string>netease</string>
+  </array>
 </dict>
 </plist>

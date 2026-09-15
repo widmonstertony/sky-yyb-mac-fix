@@ -96,6 +96,9 @@ class IntelFixTests(unittest.TestCase):
             '"C:\\\\FeverApps\\\\sky\\\\Sky.exe"="~ HIGHDPIAWARE"', first_user
         )
         self.assertIn('"dpiAwareness"=dword:00000002', first_system)
+        self.assertIn('"LogPixels"=dword:000000c0', first_user)
+        self.assertIn('"Win8DpiScaling"=dword:00000001', first_user)
+        self.assertIn('"LogPixels"=dword:000000c0', first_system)
         patched_preferences = module.PREFERENCES.read_bytes()
         self.assertIn(struct.pack("<I", 60), patched_preferences)
         self.assertNotEqual(original_preferences, patched_preferences)
@@ -225,6 +228,31 @@ class IntelFixTests(unittest.TestCase):
             return_value=" 123 C:\\FeverApps\\sky\\Sky.exe --start_from_launcher=1\n"
         ):
             self.assertTrue(module.sky_is_running())
+
+    def test_generated_apps_use_native_dock_host(self):
+        setup = (REPO / "intel/7-install-launchpad-sync.command").read_text(
+            encoding="utf-8"
+        )
+        launcher = (REPO / "intel/launch-windows-app").read_text(encoding="utf-8")
+        host = (REPO / "intel/dock_app_host.m").read_text(encoding="utf-8")
+        self.assertIn("dock-app-host", setup)
+        self.assertIn("NSApplicationActivationPolicyRegular", host)
+        self.assertIn("applicationShouldTerminate", host)
+        self.assertIn('mode" == "--stop"', launcher)
+
+    def test_process_helper_scopes_each_windows_app(self):
+        module = load_script(
+            "intel_process_helper", REPO / "intel/windows-app-process.py", self.home
+        )
+        listing = (
+            " 101 C:\\FeverApps\\sky\\Sky.exe --start_from_launcher=1\n"
+            " 102 C:\\Program Files (x86)\\Steam\\Steam.exe\n"
+            " 103 C:\\Program Files\\FeverGames\\1.0\\FeverGamesInstaller.exe\n"
+        )
+        with mock.patch.object(module.subprocess, "check_output", return_value=listing):
+            self.assertEqual(set(module.processes("netease-game")), {101})
+            self.assertEqual(set(module.processes("steam")), {102})
+            self.assertEqual(set(module.processes("netease")), {103})
 
 
 if __name__ == "__main__":

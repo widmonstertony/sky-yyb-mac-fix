@@ -31,6 +31,7 @@ DRIVE_C = PREFIX / "drive_c"
 STEAM_ROOT = DRIVE_C / "Program Files (x86)/Steam"
 USER_REG = PREFIX / "user.reg"
 LAUNCH_SCRIPT = SUPPORT / "bin/launch-windows-app"
+DOCK_HOST = SUPPORT / "bin/dock-app-host"
 APP_ROOT = Path(
     os.environ.get(
         "YYB_INTEL_APPLICATIONS",
@@ -416,18 +417,22 @@ def write_game_app(game: Game) -> Path:
         "YYBPlatform": game.platform,
         "YYBGameID": game.game_id,
         "YYBInstallPath": str(game.install_path),
+        "YYBLaunchArguments": game.launch_arguments,
     }
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream, sort_keys=True)
 
-    arguments = " ".join(shell_quote(item) for item in game.launch_arguments)
     start = executable_dir / "start"
-    start.write_text(
-        "#!/bin/zsh\n"
-        f"exec \"$HOME/Library/Application Support/YYBIntelLauncher/bin/launch-windows-app\" {arguments}\n",
-        encoding="utf-8",
-    )
-    start.chmod(0o755)
+    if DOCK_HOST.is_file():
+        shutil.copy2(DOCK_HOST, start)
+    else:
+        arguments = " ".join(shell_quote(item) for item in game.launch_arguments)
+        start.write_text(
+            "#!/bin/zsh\n"
+            f"exec \"$HOME/Library/Application Support/YYBIntelLauncher/bin/launch-windows-app\" {arguments}\n",
+            encoding="utf-8",
+        )
+        start.chmod(0o755)
 
     icon = resources / "GameIcon.icns"
     source = game.local_artwork
