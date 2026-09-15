@@ -50,6 +50,21 @@ case "$mode" in
       --force-device-scale-factor=2
     )
     ;;
+  netease-game)
+    game_id="${extra_args[1]:-}"
+    if [[ "$game_id" != "63" ]]; then
+      show_error "无法启动" "目前没有识别到这个网易游戏。"
+      exit 1
+    fi
+    launcher="tencent"
+    prefix="$HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
+    fever_root="$prefix/drive_c/Program Files/FeverGames"
+    fever_candidates=("$fever_root"/*/FeverGamesInstaller.exe(N.om[1]))
+    fever_target="${fever_candidates[1]:-}"
+    target="$prefix/drive_c/FeverApps/sky/Sky.exe"
+    log_file="$log_dir/sky.log"
+    launch_args=(--start_from_launcher=1)
+    ;;
   *)
     exit 64
     ;;
@@ -62,11 +77,18 @@ fi
 
 mkdir -p "$log_dir"
 
-if [[ "$mode" == "netease" && -x "$support_root/bin/apply-intel-retina.py" ]]; then
+if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; then
   # preferences.sav is created only after Sky's first run. Re-applying here
   # makes the next launch use the requested 60 FPS and no-motion-blur values.
   "$support_root/bin/apply-intel-retina.py" --fps 60 \
     >>"$log_dir/retina.log" 2>&1 || true
+fi
+
+if [[ "$mode" == "netease-game" && -n "$fever_target" ]]; then
+  if ! pgrep -if "$fever_target" >/dev/null 2>&1; then
+    "$support_root/bin/launch-windows-app" netease
+    sleep 8
+  fi
 fi
 
 if [[ "$mode" == "netease" && -x "$support_root/bin/download-sky.py" ]]; then
