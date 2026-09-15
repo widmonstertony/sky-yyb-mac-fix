@@ -32,7 +32,7 @@
 2. 点击本仓库右上角 **Code → Download ZIP**，解压。
 3. 双击 `install.command`。
 4. 第一次使用时，脚本会从[网易官方接口](https://loadingbaycn.webapp.163.com/app/v1/download_client/windows)取得最新版发烧游戏平台安装器，并交给应用宝安装。按出现的官方界面登录、安装《光·遇》即可；脚本会等待并自动续接高清修复。
-5. 以后双击 `launch.command`。M4 上它会先启动本次会话的兼容引擎，再打开网易平台；在“我的游戏”里点《光·遇》的“开始游戏”即可。M4 上不要直接使用应用宝生成的《光·遇》图标，否则本次兼容环境不会生效。
+5. 以后可像 M2 一样，直接从应用宝或“腾讯应用宝”文件夹点击网易发烧游戏平台；在平台里点《光·遇》的“开始游戏”即可。M4 兼容环境会自动建立。独立《光·遇》图标也会转到这条可靠的登录启动流程，`launch.command` 仍可作为备用入口。
 
 若 macOS 首次阻止 `.command`，右键文件 → **打开**。脚本不需要 `sudo`。
 
@@ -62,11 +62,12 @@ Intel 路径可设定原生分辨率和 60 FPS，但当前腾讯 x86_64 引擎�
 - 开启应用宝 Wine 的 `RetinaMode`，为 `Sky.exe`、FeverGamesLauncher/Web/Installer 设置 Per-Monitor High-DPI 感知。
 - 将应用宝保存的发烧平台/光遇缩放比例修正为 Retina 2×，并同步 MMKV CRC32。
 - 首次安装尚未存在 Retina MMKV 记录时，主动创建并校验记录，不再静默跳过高清修复。
-- 在 M4 上按需编译一个很小的本地 Vulkan 兼容层：只当设备是 Apple M4 且由 `launch.command` 启动时，将游戏看到的 MoltenVK GPU 标识映射为已验证的 M2 标识，不修改任何 Vulkan 功能或显存数据。
+- 在 M4 上按需编译一个很小的本地 Vulkan 兼容层：只当设备是 Apple M4 时，将游戏看到的 MoltenVK GPU 标识映射为已验证的 M2 标识，不修改任何 Vulkan 功能或显存数据。
+- 为应用宝生成的本地快捷入口安装可恢复的启动包装，使从应用宝、启动台或 Finder 直接点击时也会自动继承兼容环境；不修改腾讯应用宝或 Wine 引擎本体。
 - 将光遇目标帧率设为 60，关闭动态模糊。
 - 关闭 Wine 的鼠标限制裁剪，避免 Retina 缩放后鼠标坐标与窗口错位。
 
-工具不会替换或修改 `Sky.exe`、`winevulkan.dll`、应用宝引擎或网易启动器 EXE。M4 兼容层由仓库中可审查的 C 源码在本机用 Apple clang 编译，仅保存到 `~/Library/Application Support/SkyYYBMacFix/compat/`。
+工具不会替换或修改 `Sky.exe`、`winevulkan.dll`、应用宝引擎或网易启动器 EXE。M4 兼容层与快捷入口包装由仓库中可审查的源码在本机编译；应用宝生成的原始入口会单独备份并可由 `restore.command` 恢复。
 
 ## 安全与恢复
 
@@ -90,7 +91,7 @@ Intel 的注册表备份保存在：
 
 ### 仍提示“不支持”
 
-M4 的硬件能力足够；问题是 MoltenVK 暴露的设备 ID 包含 macOS 和 Apple GPU family，M4 的新标识不在当前光遇国服的本地设备判断范围中，因此它在 `vkCreateDevice` 之前就退出了。重跑 `install.command`，之后必须用 `launch.command` 启动；直接点应用宝的光遇图标不会带上 M4 兼容环境。
+M4 的硬件能力足够；问题是 MoltenVK 暴露的设备 ID 包含 macOS 和 Apple GPU family，M4 的新标识不在当前光遇国服的本地设备判断范围中，因此它在 `vkCreateDevice` 之前就退出了。重跑 `install.command` 后，应用宝生成的入口会自动带上 M4 兼容环境，可照常直接点击。
 
 M2 以及其他机型若仍报错，请退出光遇、网易发烧游戏和应用宝生成的窗口后重跑 `install.command`。Intel 上它会安全续接已完成的步骤。
 

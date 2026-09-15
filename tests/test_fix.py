@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import struct
 import sys
 import tempfile
@@ -138,6 +139,20 @@ class FixTests(unittest.TestCase):
         self.module.restore_latest()
         self.assertEqual(self.module.PUBLIC_MMKV.read_bytes(), blob)
         self.assertEqual(self.module.PUBLIC_MMKV_CRC.read_bytes(), meta)
+
+    def test_discovers_both_yyb_internal_and_user_facing_shortcuts(self):
+        package = self.module.PACKAGE_PARENT
+        expected = []
+        for root in (
+            self.module.YYB_INTERNAL_SHORTCUTS,
+            self.module.YYB_SHORTCUTS,
+        ):
+            app = root / f"{package}.app"
+            app.joinpath("Contents").mkdir(parents=True)
+            with app.joinpath("Contents/Info.plist").open("wb") as stream:
+                plistlib.dump({"YYBPackageName": package}, stream)
+            expected.append(app)
+        self.assertEqual(self.module.all_shortcuts_for(package), expected)
 
 
 if __name__ == "__main__":

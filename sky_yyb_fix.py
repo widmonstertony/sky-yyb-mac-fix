@@ -56,10 +56,18 @@ STATE_ROOT = APP_SUPPORT / "SkyYYBMacFix"
 LATEST_FILE = STATE_ROOT / "latest-backup.txt"
 YYB_APP = applications_root() / "YYBMacApp.app"
 YYB_SHORTCUTS = applications_root() / "腾讯应用宝"
+YYB_INTERNAL_SHORTCUTS = YYB_DATA / "Applications"
 SCRIPT_ROOT = Path(__file__).resolve().parent
 GPU_COMPAT_SOURCE = SCRIPT_ROOT / "compat/apple_silicon_vulkan_compat.c"
 GPU_COMPAT_DIR = STATE_ROOT / "compat"
 GPU_COMPAT_DYLIB = GPU_COMPAT_DIR / "libSkyYYBGPUCompat.dylib"
+SHORTCUT_WRAPPER_SOURCE = SCRIPT_ROOT / "compat/apple_silicon_shortcut_wrapper.c"
+SHORTCUT_CONTROLLER_SOURCE = SCRIPT_ROOT / "compat/shortcut-controller.sh"
+SHORTCUT_WRAPPER = GPU_COMPAT_DIR / "shortcut-wrapper"
+SHORTCUT_CONTROLLER = GPU_COMPAT_DIR / "shortcut-controller.sh"
+SHORTCUT_MARKER = b"SKY_YYB_SHORTCUT_WRAPPER_V1"
+SHORTCUT_ORIGINAL_NAME = "YYBPackage.skyfix-original"
+SHORTCUT_BACKUP_DIR = STATE_ROOT / "shortcut-originals"
 
 
 class FixError(RuntimeError):
@@ -184,22 +192,53 @@ def is_apple_m4() -> bool:
     return result.returncode == 0 and result.stdout.strip().startswith("Apple M4")
 
 
-def shortcut_for(package_name: str) -> Path | None:
-    direct = YYB_SHORTCUTS / f"{package_name}.app"
-    if direct.exists():
-        return direct
-    if not YYB_SHORTCUTS.exists():
-        return None
-    for app in YYB_SHORTCUTS.glob("*.app"):
-        plist = app / "Contents/Info.plist"
-        try:
-            with plist.open("rb") as stream:
-                info = plistlib.load(stream)
-        except (OSError, plistlib.InvalidFileException):
+def shortcut_roots() -> tuple[Path, ...]:
+    # YYB buttons invoke the private source bundle; the /Applications copy is
+    # only the user-facing mirror. Prefer the same source YYB itself uses.
+    return (YYB_INTERNAL_SHORTCUTS, YYB_SHORTCUTS)
+
+
+def all_shortcuts_for(package_name: str) -> list[Path]:
+    matches: list[Path] = []
+    for root in shortcut_roots():
+        direct = root / f"{package_name}.app"
+        if direct.exists():
+            matches.append(direct)
             continue
-        if info.get("YYBPackageName") == package_name:
-            return app
-    return None
+        if not root.exists():
+            continue
+        for app in root.glob("*.app"):
+            if shortcut_package(app) == package_name:
+                matches.append(app)
+                break
+    return matches
+
+
+def shortcut_for(package_name: str) -> Path | None:
+    matches = all_shortcuts_for(package_name)
+    return matches[0] if matches else None
+
+
+def shortcut_package(app: Path) -> str | None:
+    plist = app / "Contents/Info.plist"
+    try:
+        with plist.open("rb") as stream:
+            value = plistlib.load(stream).get("YYBPackageName")
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def is_shortcut_wrapper(path: Path) -> bool:
+    try:
+        return SHORTCUT_MARKER in path.read_bytes()
+    except OSError:
+        return False
+
+
+def shortcut_backup(app: Path, package: str) -> Path:
+    location = hashlib.sha256(str(app).encode("utf-8")).hexdigest()[:16]
+    return SHORTCUT_BACKUP_DIR / location / f"{package}.YYBPackage"
 
 
 def stop_related_processes() -> None:
@@ -214,6 +253,8 @@ def stop_related_processes() -> None:
         "FeverGamesLauncher.exe",
         "YYBPackage",
         "YYBMacApp",
+        "YYBService",
+        "LaunchPad",
     ):
         subprocess.run(
             ["pkill", "-x", name],
@@ -531,6 +572,127 @@ def ensure_gpu_compat() -> bool:
     return True
 
 
+def ensure_shortcut_wrapper_assets() -> None:
+    for source in (SHORTCUT_WRAPPER_SOURCE, SHORTCUT_CONTROLLER_SOURCE):
+        if not source.exists():
+            raise FixError(f"M4 自动启动组件缺失：{source}")
+    compiler = Path("/usr/bin/clang")
+    if not compiler.exists():
+        raise FixError("需要 Apple clang 编译 M4 自动启动组件；请先安装 Xcode Command Line Tools。")
+    ensure_private_dir(GPU_COMPAT_DIR)
+    signature = hashlib.sha256(
+        SHORTCUT_WRAPPER_SOURCE.read_bytes() + SHORTCUT_CONTROLLER_SOURCE.read_bytes()
+    ).hexdigest()
+    stamp = GPU_COMPAT_DIR / "shortcut-build.json"
+    try:
+        current = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    if not SHORTCUT_WRAPPER.exists() or current.get("signature") != signature:
+        temporary = SHORTCUT_WRAPPER.with_name(SHORTCUT_WRAPPER.name + ".new")
+        result = subprocess.run(
+            [
+                str(compiler), "-arch", "arm64", "-Os", "-Wall", "-Wextra", "-Werror",
+                "-o", str(temporary), str(SHORTCUT_WRAPPER_SOURCE),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            temporary.unlink(missing_ok=True)
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            raise FixError("M4 自动启动组件编译失败：" + (detail[-1] if detail else "未知错误"))
+        temporary.chmod(0o700)
+        os.replace(temporary, SHORTCUT_WRAPPER)
+    atomic_write(SHORTCUT_CONTROLLER, SHORTCUT_CONTROLLER_SOURCE.read_bytes(), 0o700)
+    atomic_write(
+        stamp,
+        (json.dumps({"signature": signature}, indent=2) + "\n").encode("utf-8"),
+        0o600,
+    )
+
+
+def sign_generated_shortcut(app: Path) -> None:
+    result = subprocess.run(
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise FixError(f"无法更新应用宝本地快捷入口 {app.name}：" + (detail[-1] if detail else "签名失败"))
+
+
+def install_shortcut_wrappers(backups: BackupSet) -> list[str]:
+    if not is_apple_m4():
+        return []
+    ensure_shortcut_wrapper_assets()
+    ensure_private_dir(SHORTCUT_BACKUP_DIR)
+    packages = [PACKAGE_PARENT]
+    sky_package = find_sky_package()
+    if sky_package:
+        packages.append(sky_package)
+    installed = 0
+    for package in packages:
+        for app in all_shortcuts_for(package):
+            executable = app / "Contents/MacOS/YYBPackage"
+            sibling = executable.with_name(SHORTCUT_ORIGINAL_NAME)
+            if not executable.exists():
+                continue
+            if is_shortcut_wrapper(executable) and sibling.exists():
+                external_backup = shortcut_backup(app, package)
+                ensure_private_dir(external_backup.parent)
+                if not external_backup.exists():
+                    atomic_write(external_backup, sibling.read_bytes(), 0o700)
+                installed += 1
+                continue
+
+            # These are YYB-generated, already ad-hoc-signed launch shortcuts—not
+            # Tencent's signed YYB or Wine engine. Preserve the exact generated
+            # executable outside the bundle so restore can always put it back.
+            original = executable.read_bytes()
+            external_backup = shortcut_backup(app, package)
+            ensure_private_dir(external_backup.parent)
+            atomic_write(external_backup, original, 0o700)
+            backups.capture(executable)
+            backups.capture(sibling)
+            code_resources = app / "Contents/_CodeSignature/CodeResources"
+            backups.capture(code_resources)
+            atomic_write(sibling, original, 0o700)
+            atomic_write(executable, SHORTCUT_WRAPPER.read_bytes(), 0o755)
+            sign_generated_shortcut(app)
+            installed += 1
+    return [f"让 {installed} 个应用宝入口自动启用 M4 兼容环境"] if installed else []
+
+
+def restore_shortcut_wrappers() -> int:
+    restored = 0
+    if not SHORTCUT_BACKUP_DIR.exists():
+        return restored
+    for root in shortcut_roots():
+        if not root.exists():
+            continue
+        for app in root.glob("*.app"):
+            package = shortcut_package(app)
+            if not package:
+                continue
+            executable = app / "Contents/MacOS/YYBPackage"
+            backup = shortcut_backup(app, package)
+            legacy_backup = SHORTCUT_BACKUP_DIR / f"{package}.YYBPackage"
+            if not backup.exists() and legacy_backup.exists():
+                backup = legacy_backup
+            sibling = executable.with_name(SHORTCUT_ORIGINAL_NAME)
+            if not backup.exists() or not is_shortcut_wrapper(executable):
+                continue
+            atomic_write(executable, backup.read_bytes(), 0o755)
+            sibling.unlink(missing_ok=True)
+            sign_generated_shortcut(app)
+            restored += 1
+    return restored
+
+
 def start_gpu_compat_engine() -> bool:
     if not ensure_gpu_compat():
         return False
@@ -680,6 +842,7 @@ def apply_fix(fps: int) -> list[str]:
         changes.extend(patch_preferences(backups, fps))
         if ensure_gpu_compat():
             changes.append("Apple M4 Vulkan 设备兼容层")
+        changes.extend(install_shortcut_wrappers(backups))
     except Exception:
         restore_from(backups.root, announce=False)
         raise
@@ -707,9 +870,6 @@ def launch() -> None:
     child = shortcut_for(package) if package else None
     parent = shortcut_for(PACKAGE_PARENT)
     if gpu_compat and parent:
-        # Fever 1.18 ignores autoRun on this YYB engine, while its parent entry
-        # reliably joins the already-running compatible engine. Keep the login
-        # and anti-cheat flow intact and let the user press Start in Fever.
         say("正在启动网易发烧游戏平台；请在平台里点“开始游戏”。")
         open_new_path(parent)
     elif child:
@@ -746,6 +906,9 @@ def restore_latest() -> None:
     if not LATEST_FILE.exists():
         raise FixError("没有找到可恢复的本地备份。")
     restore_from(Path(LATEST_FILE.read_text(encoding="utf-8").strip()))
+    restored = restore_shortcut_wrappers()
+    if restored:
+        say(f"已恢复 {restored} 个应用宝原始启动入口。")
 
 
 def status() -> int:
@@ -759,6 +922,11 @@ def status() -> int:
     }
     if is_apple_m4():
         checks["Apple M4 GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
+        parent_entries = all_shortcuts_for(PACKAGE_PARENT)
+        checks["直接点击启动"] = bool(parent_entries) and all(
+            is_shortcut_wrapper(app / "Contents/MacOS/YYBPackage")
+            for app in parent_entries
+        )
     for label, ok in checks.items():
         say(f"{'✓' if ok else '✗'} {label}")
     if SKY_EXE.exists():
