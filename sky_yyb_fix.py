@@ -69,6 +69,76 @@ SHORTCUT_MARKER = b"SKY_YYB_SHORTCUT_WRAPPER_V1"
 SHORTCUT_ORIGINAL_NAME = "YYBPackage.skyfix-original"
 SHORTCUT_BACKUP_DIR = STATE_ROOT / "shortcut-originals"
 
+# Tencent YYB Wine engine 1.10.41, as shipped by YYB macOS 0.8.0 (Build 2140).
+# No Tencent binary is distributed by this project.  The installer recognizes
+# the exact local binary, verifies every instruction sequence it replaces, and
+# writes the transformed image only after BackupSet has captured the original.
+M2_WINEVULKAN_ORIGINAL_SHA256 = (
+    "d4e0c5fd2320c8cc02d509b6363978c2bc4ce90c88a28ab2af48087102036615"
+)
+M2_WINEVULKAN_PATCHED_SHA256 = (
+    "084b97a5a02dc5dfdb65a15a85d85fd0ea0b3ec14ff7c0fcea1b2c031aa69f0a"
+)
+M2_WINEVULKAN_RELATIVE = Path(
+    "ExeEngineDownload/wine-engine.app/Contents/SharedSupport/wine/lib/"
+    "wine/x86_64-windows/winevulkan.dll"
+)
+
+# Each tuple is (file offset, exact original bytes, replacement bytes).  These
+# patches affect Wine's Vulkan reporting/creation bridge, not Sky.exe:
+#   1. report geometryShader in VkPhysicalDeviceFeatures/Features2;
+#   2. expose a desktop-GPU identity accepted by this Sky build;
+#   3. clear the unsupported geometryShader request immediately before Wine
+#      forwards vkCreateDevice to MoltenVK.
+M2_WINEVULKAN_PATCHES = (
+    (
+        0x2C338,
+        bytes.fromhex("85 c0 75 07 48 83 c4 38 5f 5e c3 48 8d 05 5e 26 04 00 48"),
+        bytes.fromhex("48 8b 44 24 30 c7 40 10 01 00 00 00 48 83 c4 38 5f 5e c3"),
+    ),
+    (
+        0x2C448,
+        bytes.fromhex("85 c0 75 07 48 83 c4 38 5f 5e c3 48 8d 05 7e 25 04 00 48"),
+        bytes.fromhex("48 8b 44 24 30 c7 40 20 01 00 00 00 48 83 c4 38 5f 5e c3"),
+    ),
+    (
+        0x2D468,
+        bytes.fromhex(
+            "85 c0 75 07 48 83 c4 38 5f 5e c3 48 8d 05 ca 18 04 00 48 89 "
+            "44 24 20 48 8d 35 92 18 04 00 48 8d 15"
+        ),
+        bytes.fromhex(
+            "48 8b 44 24 30 c7 40 08 de 10 00 00 c7 40 0c 03 1c 00 00 "
+            "c7 40 10 02 00 00 00 48 83 c4 38 5f 5e c3"
+        ),
+    ),
+    (
+        0x2D578,
+        bytes.fromhex(
+            "85 c0 75 07 48 83 c4 38 5f 5e c3 48 8d 05 ea 17 04 00 48 89 "
+            "44 24 20 48 8d 35 b2 17 04 00 48 8d 15"
+        ),
+        bytes.fromhex(
+            "48 8b 44 24 30 c7 40 18 de 10 00 00 c7 40 1c 03 1c 00 00 "
+            "c7 40 20 02 00 00 00 48 83 c4 38 5f 5e c3"
+        ),
+    ),
+    (
+        0x1CA80,
+        bytes.fromhex("41 57 41 56 41 55"),
+        bytes.fromhex("e9 7b a2 01 00 90"),
+    ),
+    (
+        0x36D00,
+        bytes(43),
+        bytes.fromhex(
+            "41 57 41 56 41 55 48 8b 42 08 48 85 c0 74 07 c7 40 20 00 00 "
+            "00 00 48 8b 42 40 48 85 c0 74 07 c7 40 10 00 00 00 00 e9 "
+            "5b 5d fe ff"
+        ),
+    ),
+)
+
 
 class FixError(RuntimeError):
     pass
@@ -84,6 +154,95 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def detected_chip() -> str:
+    override = os.environ.get("SKY_YYB_TEST_CHIP")
+    if override is not None:
+        return override
+    if os.environ.get("SKY_YYB_TEST_HOME"):
+        return ""
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        return ""
+    try:
+        result = subprocess.run(
+            ["system_profiler", "SPHardwareDataType", "-json"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        payload = json.loads(result.stdout)
+        records = payload.get("SPHardwareDataType", [])
+        if records:
+            return str(records[0].get("chip_type", ""))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    return ""
+
+
+def patch_m2_winevulkan_image(data: bytes) -> bytes:
+    """Return the reviewed M2 compatibility transform for engine 1.10.41."""
+    patched = bytearray(data)
+    for offset, original, replacement in M2_WINEVULKAN_PATCHES:
+        if len(original) != len(replacement):
+            raise AssertionError("Vulkan patch must preserve the PE image layout")
+        existing = bytes(patched[offset:offset + len(original)])
+        if existing == replacement:
+            continue
+        if existing != original:
+            raise FixError(
+                f"Vulkan 组件在偏移 {offset:#x} 与已验证版本不符，拒绝修改。"
+            )
+        patched[offset:offset + len(replacement)] = replacement
+    return bytes(patched)
+
+
+def winevulkan_targets() -> list[Path]:
+    targets = [
+        YYB_DATA / M2_WINEVULKAN_RELATIVE,
+        PREFIX / "drive_c/windows/system32/winevulkan.dll",
+        SKY_DIR / "winevulkan.dll",
+    ]
+    return list(dict.fromkeys(path for path in targets if path.exists()))
+
+
+def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
+    chip = detected_chip()
+    if chip != "Apple M2":
+        return []
+
+    targets = winevulkan_targets()
+    engine_dll = YYB_DATA / M2_WINEVULKAN_RELATIVE
+    if engine_dll not in targets:
+        raise FixError("未找到应用宝 1.10.41 的 Wine Vulkan 组件，无法应用 M2 修复。")
+
+    changed = 0
+    verified = 0
+    for path in targets:
+        digest = sha256(path)
+        if digest == M2_WINEVULKAN_PATCHED_SHA256:
+            verified += 1
+            continue
+        if digest != M2_WINEVULKAN_ORIGINAL_SHA256:
+            raise FixError(
+                "检测到未验证的 Wine Vulkan 版本，已停止以免损坏应用宝："
+                f"{path}（SHA-256 {digest[:16]}…）"
+            )
+        original = path.read_bytes()
+        transformed = patch_m2_winevulkan_image(original)
+        if hashlib.sha256(transformed).hexdigest() != M2_WINEVULKAN_PATCHED_SHA256:
+            raise FixError("M2 Vulkan 修补结果校验失败，未写入。")
+        backups.capture(path)
+        atomic_write(path, transformed)
+        if sha256(path) != M2_WINEVULKAN_PATCHED_SHA256:
+            raise FixError("M2 Vulkan 修补写入后校验失败。")
+        changed += 1
+
+    return [
+        "M2 Vulkan 设备识别/geometryShader/vkCreateDevice 兼容修复"
+        f"（修改 {changed}、已存在 {verified}）"
+    ]
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -835,6 +994,7 @@ def apply_fix(fps: int) -> list[str]:
     backups = BackupSet()
     changes: list[str] = []
     try:
+        changes.extend(patch_m2_vulkan_compat(backups))
         changes.extend(patch_registries(backups))
         changes.extend(patch_apps_db(backups))
         changes.extend(patch_fever_shortcuts(backups))
@@ -929,6 +1089,21 @@ def status() -> int:
         )
     for label, ok in checks.items():
         say(f"{'✓' if ok else '✗'} {label}")
+    chip = detected_chip()
+    if chip:
+        say(f"  芯片：{chip}")
+    if chip == "Apple M2":
+        engine_dll = YYB_DATA / M2_WINEVULKAN_RELATIVE
+        if engine_dll.exists():
+            digest = sha256(engine_dll)
+            state = (
+                "已应用"
+                if digest == M2_WINEVULKAN_PATCHED_SHA256
+                else "原版/待应用"
+                if digest == M2_WINEVULKAN_ORIGINAL_SHA256
+                else "版本未验证"
+            )
+            say(f"  M2 Vulkan 兼容层：{state}（{digest[:16]}…）")
     if SKY_EXE.exists():
         say(f"  Sky.exe SHA-256: {sha256(SKY_EXE)[:16]}…")
     return 0 if all(checks.values()) else 1

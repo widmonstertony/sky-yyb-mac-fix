@@ -83,6 +83,7 @@ class FixTests(unittest.TestCase):
         self.temp.cleanup()
         os.environ.pop("SKY_YYB_TEST_HOME", None)
         os.environ.pop("SKY_YYB_TEST_APPLICATIONS", None)
+        os.environ.pop("SKY_YYB_TEST_CHIP", None)
 
     def test_complete_fix_and_restore(self):
         original_user = self.module.USER_REG.read_bytes()
@@ -153,6 +154,34 @@ class FixTests(unittest.TestCase):
                 plistlib.dump({"YYBPackageName": package}, stream)
             expected.append(app)
         self.assertEqual(self.module.all_shortcuts_for(package), expected)
+
+    def test_m2_vulkan_transform_is_exact_and_idempotent(self):
+        end = max(
+            offset + len(original)
+            for offset, original, _replacement in self.module.M2_WINEVULKAN_PATCHES
+        )
+        image = bytearray(end + 32)
+        for offset, original, _replacement in self.module.M2_WINEVULKAN_PATCHES:
+            image[offset:offset + len(original)] = original
+
+        patched = self.module.patch_m2_winevulkan_image(bytes(image))
+        for offset, _original, replacement in self.module.M2_WINEVULKAN_PATCHES:
+            self.assertEqual(
+                patched[offset:offset + len(replacement)],
+                replacement,
+            )
+        self.assertEqual(
+            self.module.patch_m2_winevulkan_image(patched),
+            patched,
+        )
+
+    def test_m2_vulkan_transform_rejects_unknown_binary(self):
+        end = max(
+            offset + len(original)
+            for offset, original, _replacement in self.module.M2_WINEVULKAN_PATCHES
+        )
+        with self.assertRaises(self.module.FixError):
+            self.module.patch_m2_winevulkan_image(bytes(end + 32))
 
 
 if __name__ == "__main__":
