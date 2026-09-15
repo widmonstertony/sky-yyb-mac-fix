@@ -182,7 +182,7 @@ def detected_chip() -> str:
 
 
 def patch_m2_winevulkan_image(data: bytes) -> bytes:
-    """Return the reviewed M2 compatibility transform for engine 1.10.41."""
+    """Return the reviewed M2/M4 compatibility transform for engine 1.10.41."""
     patched = bytearray(data)
     for offset, original, replacement in M2_WINEVULKAN_PATCHES:
         if len(original) != len(replacement):
@@ -209,13 +209,13 @@ def winevulkan_targets() -> list[Path]:
 
 def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
     chip = detected_chip()
-    if chip != "Apple M2":
+    if chip not in ("Apple M2", "Apple M4"):
         return []
 
     targets = winevulkan_targets()
     engine_dll = YYB_DATA / M2_WINEVULKAN_RELATIVE
     if engine_dll not in targets:
-        raise FixError("未找到应用宝 1.10.41 的 Wine Vulkan 组件，无法应用 M2 修复。")
+        raise FixError("未找到应用宝 1.10.41 的 Wine Vulkan 组件，无法应用 Apple Silicon 修复。")
 
     changed = 0
     verified = 0
@@ -232,17 +232,27 @@ def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
         original = path.read_bytes()
         transformed = patch_m2_winevulkan_image(original)
         if hashlib.sha256(transformed).hexdigest() != M2_WINEVULKAN_PATCHED_SHA256:
-            raise FixError("M2 Vulkan 修补结果校验失败，未写入。")
+            raise FixError("Apple Silicon Vulkan 修补结果校验失败，未写入。")
         backups.capture(path)
         atomic_write(path, transformed)
         if sha256(path) != M2_WINEVULKAN_PATCHED_SHA256:
-            raise FixError("M2 Vulkan 修补写入后校验失败。")
+            raise FixError("Apple Silicon Vulkan 修补写入后校验失败。")
         changed += 1
 
     return [
-        "M2 Vulkan 设备识别/geometryShader/vkCreateDevice 兼容修复"
+        f"{chip} Vulkan 设备识别/geometryShader/vkCreateDevice 兼容修复"
         f"（修改 {changed}、已存在 {verified}）"
     ]
+
+
+def verified_winevulkan_patch_active() -> bool:
+    if detected_chip() not in ("Apple M2", "Apple M4"):
+        return False
+    engine_dll = YYB_DATA / M2_WINEVULKAN_RELATIVE
+    return (
+        engine_dll.exists()
+        and sha256(engine_dll) == M2_WINEVULKAN_PATCHED_SHA256
+    )
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -580,6 +590,20 @@ def upsert_reg_value(text: str, section: str, name: str, value: str) -> str:
     return text[:match.start()] + block + text[section_end:]
 
 
+def delete_reg_value(text: str, section: str, name: str) -> str:
+    header_re = re.compile(rf"(?m)^\[{re.escape(section)}\](?: [0-9]+)?$")
+    match = header_re.search(text)
+    if not match:
+        return text
+    section_end = text.find("\n[", match.end())
+    if section_end < 0:
+        section_end = len(text)
+    block = text[match.start():section_end]
+    value_re = re.compile(rf'(?m)^"{re.escape(name)}"=.*\n?')
+    block = value_re.sub("", block)
+    return text[:match.start()] + block + text[section_end:]
+
+
 def patch_registries(backups: BackupSet) -> list[str]:
     changed: list[str] = []
     for path in (USER_REG, SYSTEM_REG):
@@ -592,6 +616,11 @@ def patch_registries(backups: BackupSet) -> list[str]:
     user = upsert_reg_value(user, mac_driver, "RetinaMode", '"Y"')
     user = upsert_reg_value(user, mac_driver, "CursorClippingLocksWindows", '"N"')
     user = upsert_reg_value(user, mac_driver, "UseConfinementCursorClipping", '"N"')
+    # Remove variables used only by the superseded M4 injection prototype.
+    # The verified M2/M4 winevulkan patch needs no custom process environment.
+    if detected_chip() == "Apple M4":
+        user = delete_reg_value(user, "Environment", "DYLD_INSERT_LIBRARIES")
+        user = delete_reg_value(user, "Environment", "SKY_YYB_GPU_COMPAT")
 
     layers = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers"
     executables = [
@@ -1000,9 +1029,14 @@ def apply_fix(fps: int) -> list[str]:
         changes.extend(patch_fever_shortcuts(backups))
         changes.extend(patch_mmkv(backups))
         changes.extend(patch_preferences(backups, fps))
-        if ensure_gpu_compat():
-            changes.append("Apple M4 Vulkan 设备兼容层")
-        changes.extend(install_shortcut_wrappers(backups))
+        if is_apple_m4() and verified_winevulkan_patch_active():
+            restored = restore_shortcut_wrappers()
+            if restored:
+                changes.append(f"恢复 {restored} 个应用宝原始入口，使用 M2 同款正常启动链路")
+        else:
+            if ensure_gpu_compat():
+                changes.append("Apple M4 Vulkan 设备兼容层")
+            changes.extend(install_shortcut_wrappers(backups))
     except Exception:
         restore_from(backups.root, announce=False)
         raise
@@ -1023,13 +1057,18 @@ def find_sky_package() -> str | None:
 
 
 def launch() -> None:
-    gpu_compat = start_gpu_compat_engine()
+    gpu_compat = False
+    if is_apple_m4() and not verified_winevulkan_patch_active():
+        gpu_compat = start_gpu_compat_engine()
     if gpu_compat:
         say("已启用 Apple M4 Vulkan 兼容启动环境。")
     package = find_sky_package()
     child = shortcut_for(package) if package else None
     parent = shortcut_for(PACKAGE_PARENT)
-    if gpu_compat and parent:
+    if verified_winevulkan_patch_active() and parent:
+        say("正在通过应用宝正常启动网易发烧游戏平台；请在平台里点“开始游戏”。")
+        open_new_path(parent)
+    elif gpu_compat and parent:
         say("正在启动网易发烧游戏平台；请在平台里点“开始游戏”。")
         open_new_path(parent)
     elif child:
@@ -1081,18 +1120,21 @@ def status() -> int:
         "光遇偏好文件": PREFERENCES.exists(),
     }
     if is_apple_m4():
-        checks["Apple M4 GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
-        parent_entries = all_shortcuts_for(PACKAGE_PARENT)
-        checks["直接点击启动"] = bool(parent_entries) and all(
-            is_shortcut_wrapper(app / "Contents/MacOS/YYBPackage")
-            for app in parent_entries
-        )
+        if detected_chip() == "Apple M4":
+            checks["Apple M4 Vulkan 兼容补丁"] = verified_winevulkan_patch_active()
+        else:
+            checks["Apple M4 GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
+            parent_entries = all_shortcuts_for(PACKAGE_PARENT)
+            checks["直接点击启动"] = bool(parent_entries) and all(
+                is_shortcut_wrapper(app / "Contents/MacOS/YYBPackage")
+                for app in parent_entries
+            )
     for label, ok in checks.items():
         say(f"{'✓' if ok else '✗'} {label}")
     chip = detected_chip()
     if chip:
         say(f"  芯片：{chip}")
-    if chip == "Apple M2":
+    if chip in ("Apple M2", "Apple M4"):
         engine_dll = YYB_DATA / M2_WINEVULKAN_RELATIVE
         if engine_dll.exists():
             digest = sha256(engine_dll)
@@ -1103,7 +1145,7 @@ def status() -> int:
                 if digest == M2_WINEVULKAN_ORIGINAL_SHA256
                 else "版本未验证"
             )
-            say(f"  M2 Vulkan 兼容层：{state}（{digest[:16]}…）")
+            say(f"  {chip} Vulkan 兼容层：{state}（{digest[:16]}…）")
     if SKY_EXE.exists():
         say(f"  Sky.exe SHA-256: {sha256(SKY_EXE)[:16]}…")
     return 0 if all(checks.values()) else 1

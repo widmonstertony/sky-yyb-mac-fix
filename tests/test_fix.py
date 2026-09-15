@@ -183,6 +183,44 @@ class FixTests(unittest.TestCase):
         with self.assertRaises(self.module.FixError):
             self.module.patch_m2_winevulkan_image(bytes(end + 32))
 
+    def test_m4_uses_same_hash_pinned_vulkan_transform(self):
+        os.environ["SKY_YYB_TEST_CHIP"] = "Apple M4"
+        engine_dll = self.module.YYB_DATA / self.module.M2_WINEVULKAN_RELATIVE
+        engine_dll.parent.mkdir(parents=True)
+        end = max(
+            offset + len(original)
+            for offset, original, _replacement in self.module.M2_WINEVULKAN_PATCHES
+        )
+        image = bytearray(end + 32)
+        for offset, original, _replacement in self.module.M2_WINEVULKAN_PATCHES:
+            image[offset:offset + len(original)] = original
+        engine_dll.write_bytes(image)
+        self.module.M2_WINEVULKAN_ORIGINAL_SHA256 = self.module.sha256(engine_dll)
+        transformed = self.module.patch_m2_winevulkan_image(bytes(image))
+        self.module.M2_WINEVULKAN_PATCHED_SHA256 = __import__("hashlib").sha256(
+            transformed
+        ).hexdigest()
+        backups = self.module.BackupSet()
+        changes = self.module.patch_m2_vulkan_compat(backups)
+        self.assertTrue(changes)
+        self.assertTrue(self.module.verified_winevulkan_patch_active())
+
+    def test_m4_removes_superseded_injection_environment(self):
+        os.environ["SKY_YYB_TEST_CHIP"] = "Apple M4"
+        self.module.USER_REG.write_text(
+            'WINE REGISTRY Version 2\n\n[Environment] 1\n'
+            '"DYLD_INSERT_LIBRARIES"="/tmp/old.dylib"\n'
+            '"SKY_YYB_GPU_COMPAT"="1"\n'
+            '"TEMP"="C:\\\\Temp"\n',
+            encoding="utf-8",
+        )
+        backups = self.module.BackupSet()
+        self.module.patch_registries(backups)
+        result = self.module.USER_REG.read_text(encoding="utf-8")
+        self.assertNotIn("DYLD_INSERT_LIBRARIES", result)
+        self.assertNotIn("SKY_YYB_GPU_COMPAT", result)
+        self.assertIn('"TEMP"="C:\\\\Temp"', result)
+
 
 if __name__ == "__main__":
     unittest.main()
