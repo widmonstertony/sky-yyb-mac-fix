@@ -10,6 +10,8 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,6 +54,15 @@ def make_preferences_without_fps() -> bytes:
     return header + struct.pack("<I", string_base) + struct.pack("<II", 0, 1) + name
 
 
+def make_mmkv() -> tuple[bytes, bytes]:
+    # Four-byte MMKV sequence header, followed by one key/value record.
+    payload = b"\x01\x02\x03\x04" + b"\x03foo\x04\x03one"
+    blob = struct.pack("<I", len(payload)) + payload
+    blob += b"\0" * (4096 - len(blob))
+    crc = struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF) + b"\0" * 28
+    return blob, crc
+
+
 class IntelFixTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -71,6 +82,10 @@ class IntelFixTests(unittest.TestCase):
         module.PREFERENCES.parent.mkdir(parents=True)
         original_preferences = make_preferences()
         module.PREFERENCES.write_bytes(original_preferences)
+        module.PUBLIC_MMKV.parent.mkdir(parents=True)
+        original_mmkv, original_crc = make_mmkv()
+        module.PUBLIC_MMKV.write_bytes(original_mmkv)
+        module.PUBLIC_MMKV_CRC.write_bytes(original_crc)
 
         backup = module.apply()
         self.assertIsNotNone(backup)
@@ -84,6 +99,16 @@ class IntelFixTests(unittest.TestCase):
         patched_preferences = module.PREFERENCES.read_bytes()
         self.assertIn(struct.pack("<I", 60), patched_preferences)
         self.assertNotEqual(original_preferences, patched_preferences)
+        patched_mmkv = module.PUBLIC_MMKV.read_bytes()
+        for package in module.RETINA_PACKAGES:
+            key = ("exe_app_retina_zoom_ratio_" + package).encode("ascii")
+            self.assertIn(key + b"\x04\x032.0", patched_mmkv)
+        actual_size = struct.unpack_from("<I", patched_mmkv)[0]
+        expected_crc = zlib.crc32(patched_mmkv[4 : 4 + actual_size]) & 0xFFFFFFFF
+        self.assertEqual(
+            struct.unpack_from("<I", module.PUBLIC_MMKV_CRC.read_bytes())[0],
+            expected_crc,
+        )
         self.assertIsNone(module.apply())
         self.assertEqual(first_user, module.USER_REG.read_text(encoding="utf-8"))
 
@@ -92,6 +117,8 @@ class IntelFixTests(unittest.TestCase):
         self.assertEqual(restored_from, backup)
         self.assertEqual("WINE REGISTRY Version 2\n", module.USER_REG.read_text(encoding="utf-8"))
         self.assertEqual(original_preferences, module.PREFERENCES.read_bytes())
+        self.assertEqual(original_mmkv, module.PUBLIC_MMKV.read_bytes())
+        self.assertEqual(original_crc, module.PUBLIC_MMKV_CRC.read_bytes())
 
     def test_launchpad_windows_paths_keep_single_and_escaped_slashes(self):
         module = load_script(
@@ -139,6 +166,30 @@ class IntelFixTests(unittest.TestCase):
         with self.assertRaises(module.DownloadError):
             module.target_for("../outside.bin")
 
+    def test_official_download_commits_launcher_installed_version(self):
+        module = load_script(
+            "intel_download_finalize", REPO / "intel/download-sky.py", self.home
+        )
+        module.USER_REG.parent.mkdir(parents=True)
+        module.USER_REG.write_text(
+            "WINE REGISTRY Version 2\n\n"
+            "[Software\\\\FeverGames\\\\FeverGamesInstaller\\\\game\\\\63] 1\n"
+            '"DownloadVersionCode"="old"\n'
+            '"InstallPath"="C:\\\\FeverApps\\\\sky"\n',
+            encoding="utf-8",
+        )
+        sky = module.SKY_DIR / "Sky.exe"
+        sky.parent.mkdir(parents=True)
+        sky.write_bytes(b"MZ-fixture")
+        backup = module.finalize_install("v3_fixture")
+        self.assertIsNotNone(backup)
+        registry = module.USER_REG.read_text(encoding="utf-8")
+        self.assertIn('"VersionCode"="v3_fixture"', registry)
+        self.assertIn('"DownloadVersionCode"="v3_fixture"', registry)
+        self.assertIn('"StartupPath"="Sky.exe"', registry)
+        self.assertIn('"StartupParams"="--start_from_launcher=1"', registry)
+        self.assertIn('"UpdateFlag"="false"', registry)
+
     def test_first_run_preferences_wait_for_game_to_add_fps_field(self):
         module = load_script(
             "intel_retina_first_run",
@@ -152,6 +203,28 @@ class IntelFixTests(unittest.TestCase):
         module.PREFERENCES.write_bytes(make_preferences_without_fps())
         self.assertIsNone(module.patched_preferences(60))
         self.assertIsNotNone(module.apply(60))
+
+    def test_setup_patches_real_engine_retina_scale(self):
+        launcher = (REPO / "intel/launch-windows-app").read_text(encoding="utf-8")
+        setup = (REPO / "intel/1-setup.command").read_text(encoding="utf-8")
+        patcher = (REPO / "intel/patch_retina_engine.c").read_text(encoding="utf-8")
+        self.assertNotIn("DYLD_INSERT_LIBRARIES", launcher)
+        self.assertIn("patch-retina-engine", setup)
+        self.assertIn("$WINEMAC_LIB.yyb-intel-original", setup)
+        self.assertIn("winemac.so", patcher)
+        self.assertIn("0xdd48a", patcher)
+        self.assertIn("0x1900a8", patcher)
+        self.assertNotIn("patch_at(file, 0x12e3a0", patcher)
+
+    def test_fps_watcher_recognizes_wine_windows_process_path(self):
+        module = load_script(
+            "intel_retina_process", REPO / "intel/apply-intel-retina.py", self.home
+        )
+        with mock.patch.dict(os.environ, {"YYB_INTEL_TEST_HOME": ""}), mock.patch.object(
+            module.subprocess, "check_output",
+            return_value=" 123 C:\\FeverApps\\sky\\Sky.exe --start_from_launcher=1\n"
+        ):
+            self.assertTrue(module.sky_is_running())
 
 
 if __name__ == "__main__":

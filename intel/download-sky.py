@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ HOME = home()
 SUPPORT = HOME / "Library/Application Support/YYBIntelLauncher"
 PREFIX = HOME / "Library/Application Support/com.tencent.yybmac.wine.engine/wine"
 SKY_DIR = PREFIX / "drive_c/FeverApps/sky"
+USER_REG = PREFIX / "user.reg"
 FEVER_LOG = (
     PREFIX
     / "drive_c/users/tencentyyb/AppData/Local/FeverGames/FeverGamesInstaller/logs/FeverGamesInstallerLog.txt"
@@ -42,6 +44,97 @@ USER_AGENT = "sky-yyb-mac-fix-intel/1.0"
 
 class DownloadError(RuntimeError):
     pass
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    temporary = path.with_name(path.name + ".yyb-sky-new")
+    temporary.write_bytes(data)
+    if path.exists():
+        temporary.chmod(path.stat().st_mode & 0o777)
+    os.replace(temporary, path)
+
+
+def stop_fever_processes() -> None:
+    if os.environ.get("YYB_INTEL_TEST_HOME"):
+        return
+    try:
+        output = subprocess.check_output(
+            ["ps", "-axo", "pid=,command="], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return
+    pids: list[int] = []
+    for line in output.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) != 2 or not fields[0].isdecimal():
+            continue
+        command = fields[1]
+        if str(PREFIX) in command and "FeverGames" in command:
+            pids.append(int(fields[0]))
+    for pid in pids:
+        try:
+            os.kill(pid, 15)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if pids:
+        time.sleep(1)
+
+
+def upsert_game_value(text: str, name: str, value: str) -> str:
+    section = r"Software\\FeverGames\\FeverGamesInstaller\\game\\63"
+    header = re.compile(rf"(?m)^\[{re.escape(section)}\](?: [0-9]+)?$")
+    match = header.search(text)
+    if not match:
+        raise DownloadError("网易启动器尚未建立光遇安装记录。")
+    section_end = text.find("\n[", match.end())
+    if section_end < 0:
+        section_end = len(text)
+    block = text[match.start() : section_end]
+    line = f'"{name}"="{value}"'
+    pattern = re.compile(rf'(?m)^"{re.escape(name)}"=.*$')
+    if pattern.search(block):
+        block = pattern.sub(lambda _match: line, block)
+    else:
+        block = block.rstrip("\n") + "\n" + line + "\n"
+    return text[: match.start()] + block + text[section_end:]
+
+
+def finalize_install(version: str) -> Path | None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", version):
+        raise DownloadError("网易版本号格式异常，拒绝写入。")
+    sky = SKY_DIR / "Sky.exe"
+    if not sky.is_file():
+        sky = SKY_DIR / "sky.exe"
+    if not sky.is_file() or not USER_REG.is_file():
+        raise DownloadError("尚未找到完整的光遇程序或网易安装记录。")
+
+    # FeverGames keeps DownloadVersionCode during transfer, but its UI decides
+    # whether the game is launchable from VersionCode.  The old Intel IPC never
+    # performs this final commit, even after every official file is present.
+    stop_fever_processes()
+    original = USER_REG.read_text(encoding="utf-8")
+    updated = upsert_game_value(original, "VersionCode", version)
+    updated = upsert_game_value(updated, "DownloadVersionCode", version)
+    # FeverGames' normal downloader writes this top-level value after its
+    # final IPC commit.  GameInfo also contains startup_path, but the launch
+    # button's CreateProcess path is read from this registry value.
+    updated = upsert_game_value(updated, "StartupPath", "Sky.exe")
+    updated = upsert_game_value(updated, "StartupParams", "--start_from_launcher=1")
+    updated = upsert_game_value(updated, "UpdateFlag", "false")
+    if updated == original:
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = SUPPORT / "backups" / f"sky-install-{stamp}"
+    suffix = 0
+    while backup.exists():
+        suffix += 1
+        backup = SUPPORT / "backups" / f"sky-install-{stamp}-{suffix:02d}"
+    backup.mkdir(parents=True, mode=0o700)
+    copy = backup / "user.reg"
+    copy.write_text(original, encoding="utf-8")
+    copy.chmod(0o600)
+    atomic_write(USER_REG, updated.encode("utf-8"))
+    return backup
 
 
 def notify(title: str, message: str) -> None:
@@ -204,6 +297,7 @@ def download() -> int:
             sky = SKY_DIR / "Sky.exe"
         if not sky.is_file():
             raise DownloadError("文件已下载，但未找到 Sky.exe。")
+        finalize_install(version)
         if SYNC.is_file():
             subprocess.run([str(SYNC)], check=False)
         notify("光遇下载完成", "文件已全部通过校验；重新打开网易启动器即可开始游戏。")
@@ -250,10 +344,28 @@ def watch(seconds: int) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="修复 Intel 应用宝中光遇下载无响应")
-    parser.add_argument("--watch", action="store_true")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--watch", action="store_true")
+    actions.add_argument("--finalize", action="store_true")
     parser.add_argument("--watch-seconds", type=int, default=4 * 60 * 60)
     args = parser.parse_args()
-    return watch(args.watch_seconds) if args.watch else download()
+    if args.watch:
+        return watch(args.watch_seconds)
+    if args.finalize:
+        try:
+            version, _files = fetch_manifest()
+            backup = finalize_install(version)
+            if SYNC.is_file():
+                subprocess.run([str(SYNC)], check=False)
+            print(
+                "网易启动器安装状态已修复。"
+                + (f"备份在：{backup}" if backup else "无需重复修改。")
+            )
+            return 0
+        except DownloadError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 1
+    return download()
 
 
 if __name__ == "__main__":

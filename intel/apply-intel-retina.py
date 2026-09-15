@@ -13,6 +13,7 @@ import signal
 import struct
 import subprocess
 import time
+import zlib
 
 
 def home() -> Path:
@@ -28,6 +29,16 @@ SYSTEM_REG = PREFIX / "system.reg"
 PREFERENCES = (
     PREFIX
     / "drive_c/FeverApps/sky/data/ThatGameCompany/com.netease.sky/preferences.sav"
+)
+PUBLIC_MMKV = (
+    HOME
+    / "Library/Application Support/com.tencent.yybmac/publicMMKV/mmkv/"
+    "com.tencent.yybmac.publicMMKV"
+)
+PUBLIC_MMKV_CRC = Path(str(PUBLIC_MMKV) + ".crc")
+RETINA_PACKAGES = (
+    "com.tencent.macexe.com.45a7ca33",
+    "com.tencent.macexe.com.steampowered.steam",
 )
 STATE_ROOT = SUPPORT / "backups"
 FPS_WATCH_LOCK = SUPPORT / "sky-fps-watch.lock"
@@ -234,7 +245,92 @@ def patched_preferences(fps: int) -> bytes | None:
     return bytes(data)
 
 
+def encode_varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value >= 0x80:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while offset < len(data) and shift <= 63:
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, offset
+        shift += 7
+    raise FixError("应用宝 MMKV 记录长度异常，拒绝写入。")
+
+
+def patched_mmkv_files() -> tuple[bytes, bytes] | None:
+    """Append authoritative 2x values to Tencent's MMKV map.
+
+    The Intel engine asks this map for a per-package ratio and otherwise falls
+    back to 1.0.  Older fixes only replaced a key after Application Assistant
+    had happened to create it; Intel installations often never contain it.
+    """
+    if not PUBLIC_MMKV.is_file() or not PUBLIC_MMKV_CRC.is_file():
+        return None
+    blob = bytearray(PUBLIC_MMKV.read_bytes())
+    meta = bytearray(PUBLIC_MMKV_CRC.read_bytes())
+    if len(blob) < 12 or len(meta) < 4:
+        raise FixError("应用宝 MMKV 文件异常，拒绝写入。")
+    actual_size = struct.unpack_from("<I", blob, 0)[0]
+    if actual_size < 4 or actual_size + 4 > len(blob):
+        raise FixError("应用宝 MMKV 长度异常，拒绝写入。")
+    payload = bytearray(blob[4 : 4 + actual_size])
+
+    # The first four payload bytes are MMKV's sequence/check header.  The rest
+    # is a stream of varint-length-prefixed key/value pairs.
+    cursor = 4
+    latest: dict[bytes, bytes] = {}
+    raw_payload = bytes(payload)
+    while cursor < len(raw_payload):
+        key_length, cursor = decode_varint(raw_payload, cursor)
+        if key_length <= 0 or cursor + key_length > len(raw_payload):
+            raise FixError("应用宝 MMKV 键记录异常，拒绝写入。")
+        key = raw_payload[cursor : cursor + key_length]
+        cursor += key_length
+        value_length, cursor = decode_varint(raw_payload, cursor)
+        if cursor + value_length > len(raw_payload):
+            raise FixError("应用宝 MMKV 值记录异常，拒绝写入。")
+        latest[key] = raw_payload[cursor : cursor + value_length]
+        cursor += value_length
+
+    encoded_ratio = b"\x03" + b"2.0"
+    changed = False
+    for package in RETINA_PACKAGES:
+        key = ("exe_app_retina_zoom_ratio_" + package).encode("ascii")
+        if latest.get(key) == encoded_ratio:
+            continue
+        payload.extend(encode_varint(len(key)))
+        payload.extend(key)
+        payload.extend(encode_varint(len(encoded_ratio)))
+        payload.extend(encoded_ratio)
+        changed = True
+    if not changed:
+        return None
+
+    required = 4 + len(payload)
+    if required > len(blob):
+        capacity = ((required + 4095) // 4096) * 4096
+        blob.extend(b"\0" * (capacity - len(blob)))
+    struct.pack_into("<I", blob, 0, len(payload))
+    blob[4 : 4 + len(payload)] = payload
+    struct.pack_into("<I", meta, 0, zlib.crc32(payload) & 0xFFFFFFFF)
+    return bytes(blob), bytes(meta)
+
+
 def apply(fps: int = 60) -> Path | None:
+    # MMKV is memory-mapped. Stop the managed Windows session before reading it
+    # so the engine cannot overwrite a newly appended ratio during shutdown.
+    if PUBLIC_MMKV.is_file():
+        stop_managed_processes()
     user, system = patched_registry_texts()
     changed = []
     if user.encode("utf-8") != USER_REG.read_bytes():
@@ -244,10 +340,17 @@ def apply(fps: int = 60) -> Path | None:
     preferences = patched_preferences(fps)
     if preferences is not None and preferences != PREFERENCES.read_bytes():
         changed.append((PREFERENCES, preferences))
+    mmkv = patched_mmkv_files()
+    if mmkv is not None:
+        changed.append((PUBLIC_MMKV, mmkv[0]))
+        changed.append((PUBLIC_MMKV_CRC, mmkv[1]))
     if not changed:
         return None
 
-    if any(path in (USER_REG, SYSTEM_REG) for path, _data in changed):
+    if any(
+        path in (USER_REG, SYSTEM_REG, PUBLIC_MMKV, PUBLIC_MMKV_CRC)
+        for path, _data in changed
+    ):
         stop_managed_processes()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = STATE_ROOT / stamp
@@ -274,13 +377,20 @@ def apply(fps: int = 60) -> Path | None:
 def sky_is_running() -> bool:
     if os.environ.get("YYB_INTEL_TEST_HOME"):
         return False
-    marker = str(PREFIX / "drive_c/FeverApps/sky/Sky.exe")
-    return subprocess.run(
-        ["pgrep", "-if", marker],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    try:
+        output = subprocess.check_output(
+            ["ps", "-axo", "command="], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        # If process inspection is temporarily unavailable, waiting is safer
+        # than applying the preference patch while the game may still write it.
+        return True
+    unix_marker = str(PREFIX / "drive_c/FeverApps/sky/Sky.exe").casefold()
+    windows_marker = r"C:\FeverApps\sky\Sky.exe".casefold()
+    return any(
+        unix_marker in line.casefold() or windows_marker in line.casefold()
+        for line in output.splitlines()
+    )
 
 
 def watch_fps(fps: int, seconds: int) -> int:
@@ -314,7 +424,7 @@ def restore_latest() -> Path:
         manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise FixError(f"备份清单无法读取：{exc}") from exc
-    allowed = {USER_REG, SYSTEM_REG, PREFERENCES}
+    allowed = {USER_REG, SYSTEM_REG, PREFERENCES, PUBLIC_MMKV, PUBLIC_MMKV_CRC}
     restored = 0
     stop_managed_processes()
     for item in manifest:
@@ -349,6 +459,7 @@ def main() -> int:
             return 0
         if args.check:
             patched_registry_texts()
+            patched_mmkv_files()
             print("Retina/DPI 配置可以安全应用。")
             return 0
         if args.restore:

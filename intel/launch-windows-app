@@ -64,6 +64,8 @@ case "$mode" in
     target="$prefix/drive_c/FeverApps/sky/Sky.exe"
     log_file="$log_dir/sky.log"
     launch_args=(--start_from_launcher=1)
+    # The game id selects the wrapper mode; it is not a Sky.exe argument.
+    extra_args=()
     ;;
   *)
     exit 64
@@ -84,7 +86,10 @@ if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; th
     >>"$log_dir/retina.log" 2>&1 || true
 fi
 
-if [[ "$mode" == "netease-game" && -x "$support_root/bin/apply-intel-retina.py" ]]; then
+if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; then
+  # The launcher may start Sky itself after QR login. Keep the first-run
+  # preference watcher alive in both paths so quality_fps is saved as 60 as
+  # soon as the game creates preferences.sav and later exits.
   nohup "$support_root/bin/apply-intel-retina.py" --watch-fps --fps 60 \
     >>"$log_dir/retina.log" 2>&1 </dev/null &!
 fi
@@ -106,7 +111,9 @@ if [[ ! -x "$bridge" ]]; then
   exit 1
 fi
 
+engine_cold_start=false
 if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
+  engine_cold_start=true
   /usr/bin/open -n \
     --env "GFX_BACKEND_PATH=$dxvk" \
     --env "WINE_RETINA_MODE=1" \
@@ -126,6 +133,15 @@ fi
 if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
   show_error "PC 游戏引擎没有启动" "请稍后重试；详细信息保存在 YYBIntelLauncher 日志中。"
   exit 1
+fi
+
+# The wineserver process appears several seconds before wineboot and the
+# Windows services are ready. Launching an EXE in that gap reports success to
+# Tencent's bridge, but the Windows process exits before creating a window.
+if [[ "$engine_cold_start" == true ]]; then
+  # On this engine the server socket appears first, while wineboot finishes
+  # about 12 seconds later. Give the cold boot a conservative margin.
+  sleep 14
 fi
 
 cd "${target:h}"

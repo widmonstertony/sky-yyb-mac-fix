@@ -5,11 +5,11 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h}"
 SUPPORT_ROOT="$HOME/Library/Application Support/YYBIntelLauncher"
 BIN_DIR="$SUPPORT_ROOT/bin"
-USER_APPS="$HOME/Applications"
+SYSTEM_APPS="/Applications"
 AGENT="$HOME/Library/LaunchAgents/local.yybintel.launchpad-sync.plist"
 DOMAIN="gui/$(id -u)"
 
-mkdir -p "$BIN_DIR" "$USER_APPS" "$HOME/Library/LaunchAgents"
+mkdir -p "$BIN_DIR" "$HOME/Library/LaunchAgents"
 ditto "$PROJECT_DIR/launch-windows-app" "$BIN_DIR/launch-windows-app"
 ditto "$PROJECT_DIR/sync-launchpad-apps.py" "$BIN_DIR/sync-launchpad-apps.py"
 ditto "$PROJECT_DIR/apply-intel-retina.py" "$BIN_DIR/apply-intel-retina.py"
@@ -19,10 +19,10 @@ chmod +x "$BIN_DIR/launch-windows-app" "$BIN_DIR/sync-launchpad-apps.py" \
 
 "$BIN_DIR/apply-intel-retina.py"
 
-ditto "$PROJECT_DIR/app-bundles/Steam（Windows）.app" "$USER_APPS/Steam（Windows）.app"
-ditto "$PROJECT_DIR/app-bundles/网易游戏启动器.app" "$USER_APPS/网易游戏启动器.app"
-codesign --force --deep --sign - "$USER_APPS/Steam（Windows）.app" >/dev/null
-codesign --force --deep --sign - "$USER_APPS/网易游戏启动器.app" >/dev/null
+ditto "$PROJECT_DIR/app-bundles/Steam（Windows）.app" "$SYSTEM_APPS/Steam（Windows）.app"
+ditto "$PROJECT_DIR/app-bundles/网易游戏启动器.app" "$SYSTEM_APPS/网易游戏启动器.app"
+codesign --force --deep --sign - "$SYSTEM_APPS/Steam（Windows）.app" >/dev/null
+codesign --force --deep --sign - "$SYSTEM_APPS/网易游戏启动器.app" >/dev/null
 
 ditto "$PROJECT_DIR/launchpad-sync-agent.plist" "$AGENT"
 launchctl bootout "$DOMAIN" "$AGENT" >/dev/null 2>&1 || true
@@ -33,8 +33,11 @@ launchctl enable "$DOMAIN/local.yybintel.launchpad-sync"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
-  "$LSREGISTER" -f "$USER_APPS/Steam（Windows）.app"
-  "$LSREGISTER" -f "$USER_APPS/网易游戏启动器.app"
+  "$LSREGISTER" -f "$SYSTEM_APPS/Steam（Windows）.app"
+  "$LSREGISTER" -f "$SYSTEM_APPS/网易游戏启动器.app"
 fi
 
-print "启动台同步已启用。新安装的游戏会在 60 秒内出现为独立 App。"
+mdimport -i "$SYSTEM_APPS/Steam（Windows）.app" >/dev/null 2>&1 || true
+mdimport -i "$SYSTEM_APPS/网易游戏启动器.app" >/dev/null 2>&1 || true
+
+print "系统应用同步已启用。新安装的游戏会在 60 秒内出现在 macOS 应用列表。"

@@ -93,6 +93,10 @@ clang -O2 -Wall -Wextra \
   -o "$PROJECT_DIR/patch-ws2" \
   "$PROJECT_DIR/patch_ws2_32.c"
 
+clang -O2 -Wall -Wextra \
+  -o "$PROJECT_DIR/patch-retina-engine" \
+  "$PROJECT_DIR/patch_retina_engine.c"
+
 clang++ -std=c++17 -O2 -Wall -Wextra \
   "$PROJECT_DIR/launch_via_engine.cpp" \
   -L "$RUNTIME_DIR/wine-engine.app/Contents/Frameworks" \
@@ -115,6 +119,10 @@ ditto "$PROJECT_DIR/lib/common.sh" "$INSTALLED_BIN/lib/common.sh"
 ditto "$PROJECT_DIR/launch-windows-app" "$INSTALLED_BIN/bin/launch-windows-app"
 ditto "$PROJECT_DIR/winelauncher" \
   "$INSTALLED_BIN/.runtime/wine-engine.app/Contents/MacOS/winelauncher"
+ENGINE_WINELOADER="$INSTALLED_BIN/.runtime/wine-engine.app/Contents/MacOS/wineloader"
+if [[ -f "$ENGINE_WINELOADER.yyb-intel-original" ]]; then
+  ditto "$ENGINE_WINELOADER.yyb-intel-original" "$ENGINE_WINELOADER"
+fi
 plutil -replace NSHighResolutionCapable -bool YES \
   "$INSTALLED_BIN/.runtime/wine-engine.app/Contents/Info.plist"
 
@@ -125,6 +133,16 @@ if [[ -f "$WS2_DLL" ]]; then
   fi
   "$PROJECT_DIR/patch-ws2" "$WS2_DLL"
 fi
+ENGINE_LIB="$INSTALLED_BIN/.runtime/wine-engine.app/Contents/Frameworks/libengine.dylib"
+if [[ -f "$ENGINE_LIB.yyb-intel-original" ]]; then
+  ditto "$ENGINE_LIB.yyb-intel-original" "$ENGINE_LIB"
+fi
+WINEMAC_LIB="$INSTALLED_BIN/.runtime/wine-engine.app/Contents/SharedSupport/wine/lib/wine/x86_64-unix/winemac.so"
+if [[ ! -f "$WINEMAC_LIB.yyb-intel-original" ]]; then
+  ditto "$WINEMAC_LIB" "$WINEMAC_LIB.yyb-intel-original"
+fi
+ditto "$WINEMAC_LIB.yyb-intel-original" "$WINEMAC_LIB"
+"$PROJECT_DIR/patch-retina-engine" "$WINEMAC_LIB"
 codesign --force --sign - "$INSTALLED_BIN/WineServerHost.app" >/dev/null
 codesign --force --deep --sign - \
   "$INSTALLED_BIN/.runtime/wine-engine.app" >/dev/null

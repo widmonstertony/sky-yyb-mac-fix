@@ -24,13 +24,20 @@ def home() -> Path:
 
 
 HOME = home()
+TEST_HOME = os.environ.get("YYB_INTEL_TEST_HOME")
 SUPPORT = HOME / "Library/Application Support/YYBIntelLauncher"
 PREFIX = HOME / "Library/Application Support/com.tencent.yybmac.wine.engine/wine"
 DRIVE_C = PREFIX / "drive_c"
 STEAM_ROOT = DRIVE_C / "Program Files (x86)/Steam"
 USER_REG = PREFIX / "user.reg"
 LAUNCH_SCRIPT = SUPPORT / "bin/launch-windows-app"
-APP_ROOT = HOME / "Applications/腾讯应用宝"
+APP_ROOT = Path(
+    os.environ.get(
+        "YYB_INTEL_APPLICATIONS",
+        str(HOME / "Applications") if TEST_HOME else "/Applications",
+    )
+)
+LEGACY_APP_ROOT = HOME / "Applications/腾讯应用宝"
 ICON_CACHE = SUPPORT / "launchpad-icons"
 MANAGED_KEY = "YYBIntelLaunchpadManaged"
 LSREGISTER = Path(
@@ -374,11 +381,13 @@ def make_icns(source: Path, output: Path) -> bool:
 
 
 def fallback_icon(game: Game) -> Path | None:
-    if game.platform == "steam":
-        candidate = HOME / "Applications/Steam（Windows）.app/Contents/Resources/Steam.icns"
-    else:
-        candidate = HOME / "Applications/网易游戏启动器.app/Contents/Resources/FeverGames.icns"
-    return candidate if candidate.is_file() else None
+    app_name = "Steam（Windows）.app" if game.platform == "steam" else "网易游戏启动器.app"
+    icon_name = "Steam.icns" if game.platform == "steam" else "FeverGames.icns"
+    for root in (APP_ROOT, HOME / "Applications"):
+        candidate = root / app_name / "Contents/Resources" / icon_name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def write_game_app(game: Game) -> Path:
@@ -462,6 +471,35 @@ def register(app: Path) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+    subprocess.run(
+        ["mdimport", "-i", str(app)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def remove_legacy_apps(expected_ids: set[str]) -> int:
+    if LEGACY_APP_ROOT == APP_ROOT or not LEGACY_APP_ROOT.is_dir():
+        return 0
+    removed = 0
+    for app in LEGACY_APP_ROOT.glob("*.app"):
+        try:
+            with (app / "Contents/Info.plist").open("rb") as stream:
+                info = plistlib.load(stream)
+        except (OSError, plistlib.InvalidFileException):
+            continue
+        if info.get(MANAGED_KEY) and info.get("CFBundleIdentifier") in expected_ids:
+            if LSREGISTER.is_file():
+                subprocess.run(
+                    [str(LSREGISTER), "-u", str(app)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            shutil.rmtree(app)
+            removed += 1
+    return removed
 
 
 def sync(dry_run: bool = False) -> tuple[list[Game], int]:
@@ -474,11 +512,12 @@ def sync(dry_run: bool = False) -> tuple[list[Game], int]:
     expected = {game.bundle_id for game in games}
     apps = [write_game_app(game) for game in games]
     removed = remove_stale_apps(expected)
+    removed += remove_legacy_apps(expected)
     for app in apps:
         register(app)
     for launcher in (
-        HOME / "Applications/Steam（Windows）.app",
-        HOME / "Applications/网易游戏启动器.app",
+        APP_ROOT / "Steam（Windows）.app",
+        APP_ROOT / "网易游戏启动器.app",
     ):
         if launcher.exists():
             register(launcher)
@@ -493,7 +532,7 @@ def main() -> int:
     for game in games:
         print(f"{game.platform}: {game.name} [{game.game_id}]")
     if not args.dry_run:
-        print(f"已同步 {len(games)} 个游戏图标，清理 {removed} 个过期图标。")
+        print(f"已同步 {len(games)} 个系统应用图标，清理 {removed} 个过期图标。")
     return 0
 
 
