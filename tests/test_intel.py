@@ -103,6 +103,10 @@ class IntelFixTests(unittest.TestCase):
         sky.write_bytes(b"MZ-fixture")
         games = module.discover_netease_games()
         self.assertEqual([(game.game_id, game.name) for game in games], [("63", "光·遇")])
+        self.assertEqual(
+            games[0].launch_arguments,
+            ["netease", "fevergames://mygame/?gameId=63&autoRun=1"],
+        )
 
     def test_official_download_is_verified_and_rejects_path_traversal(self):
         module = load_script(

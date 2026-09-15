@@ -56,7 +56,10 @@ class Game:
     def launch_arguments(self) -> list[str]:
         if self.platform == "steam":
             return ["steam", "-applaunch", self.game_id]
-        return ["netease", "--gameId", self.game_id]
+        return [
+            "netease",
+            f"fevergames://mygame/?gameId={self.game_id}&autoRun=1",
+        ]
 
 
 def valve_pairs(text: str) -> dict[str, str]:
