@@ -1,0 +1,16 @@
+.DS_Store
+*.download
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+
+# Never commit local Wine/YYB state or proprietary binaries.
+*.exe
+*.dll
+*.sav
+*.reg
+*.mmkv
+*.crc
+apps.db
+backups/
