@@ -172,6 +172,18 @@ def engine_wineserver() -> Path | None:
     return app / "Contents/MacOS/wineserver" if app else None
 
 
+def is_apple_m4() -> bool:
+    if platform.machine() != "arm64" or os.environ.get("SKY_YYB_TEST_HOME"):
+        return False
+    result = subprocess.run(
+        ["sysctl", "-n", "machdep.cpu.brand_string"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip().startswith("Apple M4")
+
+
 def shortcut_for(package_name: str) -> Path | None:
     direct = YYB_SHORTCUTS / f"{package_name}.app"
     if direct.exists():
@@ -466,7 +478,7 @@ def patch_fever_shortcuts(backups: BackupSet) -> list[str]:
 
 
 def ensure_gpu_compat() -> bool:
-    if platform.machine() != "arm64" or os.environ.get("SKY_YYB_TEST_HOME"):
+    if not is_apple_m4():
         return False
     engine = find_engine_app()
     if not engine:
@@ -745,8 +757,8 @@ def status() -> int:
         "应用宝应用数据库": APPS_DB.exists(),
         "光遇偏好文件": PREFERENCES.exists(),
     }
-    if platform.machine() == "arm64" and not os.environ.get("SKY_YYB_TEST_HOME"):
-        checks["Apple Silicon GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
+    if is_apple_m4():
+        checks["Apple M4 GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
     for label, ok in checks.items():
         say(f"{'✓' if ok else '✗'} {label}")
     if SKY_EXE.exists():
