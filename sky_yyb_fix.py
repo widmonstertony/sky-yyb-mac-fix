@@ -330,14 +330,14 @@ def patch_registries(backups: BackupSet) -> list[str]:
 
     layers = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers"
     executables = [
-        r"C:\FeverApps\sky\Sky.exe",
-        r"C:\Program Files\FeverGames\FeverGamesLauncher.exe",
+        r"C:\\FeverApps\\sky\\Sky.exe",
+        r"C:\\Program Files\\FeverGames\\FeverGamesLauncher.exe",
     ]
     for version in installed_fever_versions():
         executables.extend(
             [
-                rf"C:\Program Files\FeverGames\{version.name}\FeverGamesInstaller.exe",
-                rf"C:\Program Files\FeverGames\{version.name}\FeverGamesWeb.exe",
+                rf"C:\\Program Files\\FeverGames\\{version.name}\\FeverGamesInstaller.exe",
+                rf"C:\\Program Files\\FeverGames\\{version.name}\\FeverGamesWeb.exe",
             ]
         )
     for executable in executables:

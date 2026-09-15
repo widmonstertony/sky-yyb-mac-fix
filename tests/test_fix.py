@@ -84,6 +84,10 @@ class FixTests(unittest.TestCase):
         child = database[self.module.PACKAGE_SKY_PREFIX + "fixture"]
         self.assertEqual(child["entry_path"], "fevergames://mygame/?gameId=63&autoRun=1")
         self.assertIn('"RetinaMode"="Y"', self.module.USER_REG.read_text())
+        self.assertIn(
+            '"C:\\\\FeverApps\\\\sky\\\\Sky.exe"="~ HIGHDPIAWARE"',
+            self.module.USER_REG.read_text(),
+        )
         self.assertIn(b"\x04\x032.0", self.module.PUBLIC_MMKV.read_bytes())
 
         prefs = self.module.PREFERENCES.read_bytes()
