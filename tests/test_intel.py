@@ -96,6 +96,13 @@ class IntelFixTests(unittest.TestCase):
         self.assertEqual(
             module.windows_path(r"C:\\Games\\Sky"), module.DRIVE_C / "Games/Sky"
         )
+        module.USER_REG.parent.mkdir(parents=True)
+        module.USER_REG.write_text("WINE REGISTRY Version 2\n", encoding="utf-8")
+        sky = module.DRIVE_C / "FeverApps/sky/Sky.exe"
+        sky.parent.mkdir(parents=True)
+        sky.write_bytes(b"MZ-fixture")
+        games = module.discover_netease_games()
+        self.assertEqual([(game.game_id, game.name) for game in games], [("63", "光·遇")])
 
     def test_official_download_is_verified_and_rejects_path_traversal(self):
         module = load_script(

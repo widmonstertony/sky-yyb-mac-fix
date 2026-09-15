@@ -260,6 +260,21 @@ def discover_netease_games() -> list[Game]:
                 remote_artwork=artwork,
             )
         )
+    # FeverGames' legacy Intel downloader can fail before it commits its game
+    # registry record. The official payload is still a valid installation once
+    # Sky.exe exists, so keep Launchpad discovery independent of that IPC step.
+    sky_dir = DRIVE_C / "FeverApps/sky"
+    if not any(game.game_id == "63" for game in games):
+        sky_executable = first_existing_executable(sky_dir, "Sky.exe")
+        if sky_executable is not None:
+            games.append(
+                Game(
+                    platform="netease",
+                    game_id="63",
+                    name="光·遇",
+                    install_path=sky_dir,
+                )
+            )
     return games
 
 
