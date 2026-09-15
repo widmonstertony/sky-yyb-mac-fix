@@ -1,6 +1,6 @@
 # 光遇 PC 国服 · macOS 应用宝一键安装/高清修复
 
-让 Apple Silicon Mac 通过腾讯应用宝自带的 Wine/GPTK 引擎安装、登录并启动网易《光·遇》PC 国服，同时修复“设备不支持”、协议启动、Retina 模糊和鼠标坐标缩放问题。
+让 Apple Silicon 或 Intel Mac 通过腾讯应用宝自带的 Windows 游戏引擎安装、登录并启动网易《光·遇》PC 国服，同时修复“设备不支持”、协议启动、Retina 模糊、鼠标坐标缩放和旧版 Intel 引擎下载无响应等问题。
 
 > 这是非官方社区兼容工具，与腾讯、网易或 thatgamecompany 无关。它不会绕过登录、反作弊、付费或服务器验证；你仍需使用自己的合法账号扫码登录。
 
@@ -14,7 +14,12 @@
 - 光遇 PC 国服 `v3_4868_e579d901f2e7c3411dbf9bc551b65546`
 - 内置屏幕 Retina 2560×1600
 
-其他 Apple Silicon 机型会按本机 Retina 像素尺寸输出，不会硬编码成 2560×1600。Intel Mac、外接非 Retina 屏幕以及未来版本尚未逐台验证。
+- MacBook Pro 16-inch (Intel, 2019)，Core i9-9980HK、Radeon Pro 5600M
+- macOS 26.7
+- 腾讯应用宝 macOS 0.6.5（Build 1684）内置 x86_64 Wine 引擎
+- 网易发烧游戏平台 1.18.43.22
+
+其他 Retina 机型会按屏幕缩放输出，不会硬编码成 2560×1600。外接非 Retina 屏幕以及未来版本尚未逐台验证。
 
 ## 一键使用
 
@@ -32,6 +37,17 @@
 python3 sky_yyb_fix.py setup --fps 60
 ```
 
+## Intel Mac 一键使用
+
+1. 下载并解压本仓库，双击根目录的 `install.command`；脚本会自动识别 Intel。
+2. 脚本从腾讯官方地址取得应用宝 0.6.5 安装镜像，验证固定 SHA-256 后，只提取其中的 x86_64 PC 游戏引擎。仓库本身不包含腾讯、网易或 Steam 二进制。
+3. Windows 版 Steam 和网易游戏启动器会安装到同一个应用宝 Wine 环境，并在 `~/Applications` 生成可被 macOS 启动台识别的 App。
+4. 从 Steam 或网易启动器安装的游戏完成落盘后，后台同步会在 60 秒内为它生成独立的启动台 App。
+
+Intel 版网易启动器使用真正的 2× Retina 后备缓冲和进程级 DPI 感知。该旧引擎的网易下载 IPC 在新系统上会卡住；只有当你在启动器中明确点击《光·遇》下载后，工具才会接管请求，从网易公开的官方清单/CDN 断点下载，并逐文件核对网易提供的 MD5。完成后重新打开网易启动器即可。
+
+Intel 路径可设定原生分辨率和 60 FPS，但当前腾讯 x86_64 引擎不提供可用的 MetalFX 或通用帧生成。因此本项目不会把“超分 + 插帧”伪装成已实现功能；是否有游戏内分辨率缩放取决于游戏自身。
+
 ## 它实际修改了什么
 
 - 从网易官方接口动态获取安装包 URL 与 MD5，不在仓库分发任何游戏/启动器二进制。
@@ -45,13 +61,19 @@ python3 sky_yyb_fix.py setup --fps 60
 
 ## 安全与恢复
 
-每次修改前，相关文件都会备份到：
+Apple Silicon 每次修改前会把相关文件备份到：
 
 ```text
 ~/Library/Application Support/SkyYYBMacFix/backups/
 ```
 
-双击 `restore.command` 可恢复最近一次修改。备份可能包含本机应用设置，因此权限设为仅当前用户可读，切勿上传。
+Intel 的注册表备份保存在：
+
+```text
+~/Library/Application Support/YYBIntelLauncher/backups/
+```
+
+两种机型都可双击根目录的 `restore.command` 恢复最近一次配置修改；脚本会自动识别架构。备份可能包含本机应用设置，因此权限设为仅当前用户可读，切勿上传。
 
 仓库不采集遥测，也不会读取或输出网易登录 token。建议先阅读脚本；其全部实现只有 Python 标准库。
 
@@ -59,11 +81,15 @@ python3 sky_yyb_fix.py setup --fps 60
 
 ### 仍提示“不支持”
 
-确保使用 Apple Silicon Mac，并让应用宝完成 Windows/Wine 引擎初始化。退出光遇、网易发烧游戏和应用宝生成的窗口后，再运行 `install.command`。
+Apple Silicon 上请让应用宝完成 Windows/Wine 引擎初始化。Intel 上直接重跑 `install.command`，它会安全续接已完成的步骤。退出光遇、网易发烧游戏和应用宝生成的窗口后再修复。
 
 ### 安装或登录停在 99%
 
 不要直接运行 `Sky.exe`。本工具会恢复 `fevergames://` 协议入口；请让发烧游戏平台保持打开并完成扫码登录。网络与服务器异常不属于本地兼容层问题。
+
+### Intel 上点击《光·遇》下载没有反应
+
+请从 macOS 启动台里的“网易游戏启动器”打开并再次点击下载。随启动器启动的后台助手会接管旧引擎无法完成的 IPC 下载；支持断点续传，完成时会发出系统通知并生成《光·遇》启动台图标。不要直接运行仓库里的下载脚本来绕过这个明确点击动作。
 
 ### 启动器或游戏仍然模糊
 

@@ -309,7 +309,7 @@ def upsert_reg_value(text: str, section: str, name: str, value: str) -> str:
     block = text[match.start():section_end]
     value_re = re.compile(rf'(?m)^"{re.escape(name)}"=.*$')
     if value_re.search(block):
-        block = value_re.sub(line, block)
+        block = value_re.sub(lambda _match: line, block)
     else:
         block = block.rstrip("\n") + "\n" + line + "\n"
     return text[:match.start()] + block + text[section_end:]

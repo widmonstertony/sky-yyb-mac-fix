@@ -14,3 +14,12 @@ __pycache__/
 *.crc
 apps.db
 backups/
+
+# Intel setup downloads/compiles these locally from the reviewed sources.
+*.dmg
+intel/.runtime/
+intel/wine-loader
+intel/wineserver-wrapper
+intel/winelauncher
+intel/patch-ws2
+intel/WineServerHost.app/Contents/MacOS/host

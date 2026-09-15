@@ -2,6 +2,11 @@
 set -u
 
 SCRIPT_DIR=${0:A:h}
+
+if [[ "$(uname -m)" == "x86_64" ]]; then
+  exec "$SCRIPT_DIR/intel/install.command"
+fi
+
 clear
 echo "Sky 国服 · 腾讯应用宝 macOS 一键安装/修复"
 echo "================================================"

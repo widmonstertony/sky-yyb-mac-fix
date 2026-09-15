@@ -1,6 +1,11 @@
 #!/bin/zsh
 set -u
 SCRIPT_DIR=${0:A:h}
+
+if [[ "$(uname -m)" == "x86_64" ]]; then
+  exec "$SCRIPT_DIR/intel/restore.command"
+fi
+
 clear
 echo "将恢复最近一次修复前的应用宝/光遇配置。"
 /usr/bin/python3 "$SCRIPT_DIR/sky_yyb_fix.py" restore

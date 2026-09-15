@@ -1,0 +1,3 @@
+#!/bin/zsh
+
+exec "$HOME/Library/Application Support/YYBIntelLauncher/bin/launch-windows-app" netease

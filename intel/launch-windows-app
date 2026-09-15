@@ -1,0 +1,105 @@
+#!/bin/zsh
+
+set -u
+
+mode="${1:-}"
+if (( $# > 0 )); then
+  shift
+fi
+extra_args=("$@")
+support_root="$HOME/Library/Application Support/YYBIntelLauncher"
+engine="$support_root/.runtime/wine-engine.app"
+bridge="$engine/Contents/MacOS/winelauncher"
+engine_server="$engine/Contents/MacOS/wineserver"
+dxvk="$engine/Contents/Frameworks/render/dxvk/wine"
+log_dir="$support_root/logs"
+
+show_error() {
+  /usr/bin/osascript -e "display alert \"$1\" message \"$2\" as critical" >/dev/null 2>&1 || true
+}
+
+if [[ "$(uname -m)" != "x86_64" ]]; then
+  show_error "无法启动" "这个启动方式只为 Intel Mac 配置。"
+  exit 1
+fi
+
+case "$mode" in
+  steam)
+    launcher="tencent"
+    prefix="$HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
+    target="$prefix/drive_c/Program Files (x86)/Steam/Steam.exe"
+    log_file="$log_dir/steam.log"
+    launch_args=()
+    ;;
+  netease)
+    launcher="tencent"
+    prefix="$HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
+    fever_root="$prefix/drive_c/Program Files/FeverGames"
+    candidates=("$fever_root"/*/FeverGamesInstaller.exe(N.om[1]))
+    target="${candidates[1]:-}"
+    log_file="$log_dir/netease.log"
+    # The old Intel engine cannot finish FeverGames' downloader IPC. A watcher
+    # below hands only an explicit Sky download click to the official CDN
+    # resume helper while the stable YYB window bridge keeps pumping events.
+    launch_args=(
+      --no-sandbox
+      --in-process-gpu
+      --disable-gpu
+      --disable-gpu-compositing
+      --disable-direct-composition
+      --force-device-scale-factor=2
+    )
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+
+if [[ -z "$target" || ! -f "$target" ]]; then
+  show_error "还没有安装好" "找不到对应的 Windows 启动器文件。"
+  exit 1
+fi
+
+mkdir -p "$log_dir"
+
+if [[ "$mode" == "netease" && -x "$support_root/bin/apply-intel-retina.py" ]]; then
+  # preferences.sav is created only after Sky's first run. Re-applying here
+  # makes the next launch use the requested 60 FPS and no-motion-blur values.
+  "$support_root/bin/apply-intel-retina.py" --fps 60 \
+    >>"$log_dir/retina.log" 2>&1 || true
+fi
+
+if [[ "$mode" == "netease" && -x "$support_root/bin/download-sky.py" ]]; then
+  nohup "$support_root/bin/download-sky.py" --watch \
+    >>"$log_dir/sky-download.log" 2>&1 </dev/null &!
+fi
+
+if [[ ! -x "$bridge" ]]; then
+  show_error "运行环境不完整" "应用宝的 PC 游戏引擎或启动桥不存在。"
+  exit 1
+fi
+
+if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
+  /usr/bin/open -n \
+    --env "GFX_BACKEND_PATH=$dxvk" \
+    --env "WINE_RETINA_MODE=1" \
+    --env "WINE_RETINA_SCALE=2.0" \
+    --env "DXVK_HUD=0" \
+    --env "MTL_HUD_ENABLED=0" \
+    --env "D3DM_ENABLE_METALFX=0" \
+    --env "WINEDEBUG=-all" \
+    "$engine"
+
+  for _ in {1..150}; do
+    pgrep -f "$engine_server" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+fi
+
+if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
+  show_error "PC 游戏引擎没有启动" "请稍后重试；详细信息保存在 YYBIntelLauncher 日志中。"
+  exit 1
+fi
+
+cd "${target:h}"
+nohup "$bridge" "$target" "${launch_args[@]}" "${extra_args[@]}" >>"$log_file" 2>&1 </dev/null &!
