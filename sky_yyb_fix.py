@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import plistlib
 import re
 import shutil
@@ -55,6 +56,10 @@ STATE_ROOT = APP_SUPPORT / "SkyYYBMacFix"
 LATEST_FILE = STATE_ROOT / "latest-backup.txt"
 YYB_APP = applications_root() / "YYBMacApp.app"
 YYB_SHORTCUTS = applications_root() / "腾讯应用宝"
+SCRIPT_ROOT = Path(__file__).resolve().parent
+GPU_COMPAT_SOURCE = SCRIPT_ROOT / "compat/apple_silicon_vulkan_compat.c"
+GPU_COMPAT_DIR = STATE_ROOT / "compat"
+GPU_COMPAT_DYLIB = GPU_COMPAT_DIR / "libSkyYYBGPUCompat.dylib"
 
 
 class FixError(RuntimeError):
@@ -149,6 +154,24 @@ def installed_fever_versions() -> list[Path]:
     )
 
 
+def find_engine_app() -> Path | None:
+    base = YYB_DATA / "ExeEngineDownload"
+    if not base.exists():
+        return None
+    candidates = []
+    for app in base.glob("*.app"):
+        wineserver = app / "Contents/MacOS/wineserver"
+        moltenvk = app / "Contents/Frameworks/libMoltenVK.dylib"
+        if wineserver.exists() and moltenvk.exists():
+            candidates.append(app)
+    return max(candidates, key=lambda item: item.stat().st_mtime) if candidates else None
+
+
+def engine_wineserver() -> Path | None:
+    app = find_engine_app()
+    return app / "Contents/MacOS/wineserver" if app else None
+
+
 def shortcut_for(package_name: str) -> Path | None:
     direct = YYB_SHORTCUTS / f"{package_name}.app"
     if direct.exists():
@@ -174,6 +197,7 @@ def stop_related_processes() -> None:
     for name in (
         "Sky.exe",
         "FeverGamesWeb.exe",
+        "FeverGamesWeb",
         "FeverGamesInstaller.exe",
         "FeverGamesLauncher.exe",
         "YYBPackage",
@@ -181,6 +205,28 @@ def stop_related_processes() -> None:
     ):
         subprocess.run(
             ["pkill", "-x", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    if YYB_SHORTCUTS.exists():
+        for executable in YYB_SHORTCUTS.glob("*.app/Contents/MacOS/YYBPackage"):
+            subprocess.run(
+                ["pkill", "-f", str(executable)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+    # Wine launchers appear under truncated Windows paths in macOS process
+    # listings, so name-based pkill does not actually stop them. Ask the YYB
+    # wineserver to close the whole prefix before editing its live databases.
+    wineserver = engine_wineserver()
+    if wineserver:
+        environment = os.environ.copy()
+        environment["WINEPREFIX"] = str(PREFIX)
+        subprocess.run(
+            [str(wineserver), "-k"],
+            env=environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -193,6 +239,13 @@ def open_path(path: Path) -> None:
         say(f"[test] open {path}")
         return
     subprocess.run(["open", str(path)], check=True)
+
+
+def open_new_path(path: Path) -> None:
+    if os.environ.get("SKY_YYB_TEST_HOME"):
+        say(f"[test] open new {path}")
+        return
+    subprocess.run(["open", "-n", str(path)], check=True)
 
 
 def open_with_yyb(path: Path) -> None:
@@ -388,21 +441,136 @@ def patch_apps_db(backups: BackupSet) -> list[str]:
     return [f"修复 {len(sky_keys)} 个应用宝协议启动入口"]
 
 
+def patch_fever_shortcuts(backups: BackupSet) -> list[str]:
+    programs = PREFIX / "drive_c/users"
+    if not programs.exists():
+        return []
+    pattern = re.compile(
+        rb"(?m)^URL=fevergames://mygame/\?gameId=63[^\r\n]*"
+    )
+    replacement = b"URL=fevergames://mygame/?gameId=63&autoRun=1"
+    changed = 0
+    # YYB rebuilds apps.db from both the Desktop and Start Menu copies. Patch
+    # every matching shortcut source so the cached entry cannot regress.
+    for shortcut in programs.rglob("*.url"):
+        data = shortcut.read_bytes()
+        if not pattern.search(data):
+            continue
+        updated = pattern.sub(replacement, data)
+        if updated == data:
+            continue
+        backups.capture(shortcut)
+        atomic_write(shortcut, updated)
+        changed += 1
+    return [f"修复 {changed} 个发烧平台自动启动入口"] if changed else []
+
+
+def ensure_gpu_compat() -> bool:
+    if platform.machine() != "arm64" or os.environ.get("SKY_YYB_TEST_HOME"):
+        return False
+    engine = find_engine_app()
+    if not engine:
+        raise FixError("未找到应用宝 Wine 引擎，无法安装 Apple Silicon GPU 兼容层。")
+    moltenvk = engine / "Contents/Frameworks/libMoltenVK.dylib"
+    if not GPU_COMPAT_SOURCE.exists():
+        raise FixError(f"GPU 兼容层源码缺失：{GPU_COMPAT_SOURCE}")
+    compiler = Path("/usr/bin/clang")
+    if not compiler.exists():
+        raise FixError("需要 Apple clang 编译 M4 兼容层；请先安装 Xcode Command Line Tools。")
+
+    ensure_private_dir(GPU_COMPAT_DIR)
+    signature = hashlib.sha256(
+        GPU_COMPAT_SOURCE.read_bytes()
+        + str(moltenvk.stat().st_mtime_ns).encode("ascii")
+        + str(moltenvk.stat().st_size).encode("ascii")
+    ).hexdigest()
+    stamp = GPU_COMPAT_DIR / "build.json"
+    try:
+        current = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    if GPU_COMPAT_DYLIB.exists() and current.get("signature") == signature:
+        return True
+
+    temporary = GPU_COMPAT_DYLIB.with_suffix(".dylib.new")
+    command = [
+        str(compiler),
+        "-arch", "x86_64",
+        "-Os",
+        "-dynamiclib",
+        "-Wall", "-Wextra", "-Werror",
+        f"-Wl,-rpath,{moltenvk.parent}",
+        "-o", str(temporary),
+        str(GPU_COMPAT_SOURCE),
+        str(moltenvk),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode:
+        temporary.unlink(missing_ok=True)
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise FixError("M4 GPU 兼容层编译失败：" + (detail[-1] if detail else "未知错误"))
+    temporary.chmod(0o700)
+    os.replace(temporary, GPU_COMPAT_DYLIB)
+    atomic_write(
+        stamp,
+        (json.dumps({"signature": signature}, indent=2) + "\n").encode("utf-8"),
+        0o600,
+    )
+    return True
+
+
+def start_gpu_compat_engine() -> bool:
+    if not ensure_gpu_compat():
+        return False
+    engine = find_engine_app()
+    if not engine:
+        raise FixError("应用宝 Wine 引擎不完整。")
+    # Starting the engine app directly is intentionally session-only: it avoids
+    # modifying or re-signing Tencent's app while ensuring its Wine children
+    # inherit the compatibility library. The parent Fever shortcut can then
+    # connect normally; the generated Sky child shortcut cannot initialize the
+    # engine this way and otherwise stalls at 99%.
+    subprocess.run(
+        [
+            "open", "-n",
+            "--env", f"WINEPREFIX={PREFIX}",
+            "--env", "SKY_YYB_GPU_COMPAT=1",
+            "--env", f"DYLD_INSERT_LIBRARIES={GPU_COMPAT_DYLIB}",
+            str(engine),
+        ],
+        check=True,
+    )
+    time.sleep(8)
+    return True
+
+
 def patch_mmkv(backups: BackupSet) -> list[str]:
     if not PUBLIC_MMKV.exists() or not PUBLIC_MMKV_CRC.exists():
         return []
     blob = bytearray(PUBLIC_MMKV.read_bytes())
     prefix = b"exe_app_retina_zoom_ratio_" + PACKAGE_PARENT.encode("ascii")
+    actual_size = struct.unpack_from("<I", blob, 0)[0]
+    if actual_size <= 0 or actual_size + 4 > len(blob):
+        raise FixError("应用宝 MMKV 长度异常，拒绝写入。")
+    meta = bytearray(PUBLIC_MMKV_CRC.read_bytes())
+    if len(meta) < 40:
+        raise FixError("应用宝 MMKV CRC 文件异常，拒绝写入。")
+    original_crc = zlib.crc32(blob[4:4 + actual_size]) & 0xFFFFFFFF
+    if struct.unpack_from("<I", meta, 0)[0] != original_crc:
+        raise FixError("应用宝 MMKV 校验不一致；请完全退出应用宝后重试。")
+    version = struct.unpack_from("<I", meta, 4)[0]
+    if version >= 3 and struct.unpack_from("<I", meta, 28)[0] != actual_size:
+        raise FixError("应用宝 MMKV 元数据长度不一致，拒绝写入。")
+    if any(meta[12:28]) or (len(meta) >= 112 and any(meta[104:112])):
+        raise FixError("不支持加密或带过期配置的 MMKV，拒绝写入。")
     positions = []
     start = 0
     while True:
-        index = blob.find(prefix, start)
+        index = blob.find(prefix, start, actual_size + 4)
         if index < 0:
             break
         positions.append(index)
         start = index + len(prefix)
-    if not positions:
-        return []
     replacements = 0
     for index in positions:
         end = index + len(prefix)
@@ -413,20 +581,43 @@ def patch_mmkv(backups: BackupSet) -> list[str]:
             if old in (b"1.0", b"2.0"):
                 blob[end + 2:end + 5] = b"2.0"
                 replacements += 1
-    if not replacements:
-        return []
-    actual_size = struct.unpack_from("<I", blob, 0)[0]
-    if actual_size <= 0 or actual_size + 4 > len(blob):
-        raise FixError("应用宝 MMKV 长度异常，拒绝写入。")
-    meta = bytearray(PUBLIC_MMKV_CRC.read_bytes())
-    if len(meta) < 4:
-        raise FixError("应用宝 MMKV CRC 文件异常，拒绝写入。")
-    struct.pack_into("<I", meta, 0, zlib.crc32(blob[4:4 + actual_size]) & 0xFFFFFFFF)
+    # A fresh YYB install has no saved zoom records. Append ordinary MMKV
+    # string entries instead of silently reporting success without enabling HD.
+    packages = [PACKAGE_PARENT]
+    sky_package = find_sky_package()
+    if sky_package:
+        packages.append(sky_package)
+    def varint(value: int) -> bytes:
+        result = bytearray()
+        while value >= 128:
+            result.append((value & 127) | 128)
+            value >>= 7
+        result.append(value)
+        return bytes(result)
+    additions = bytearray()
+    for package in packages:
+        key = b"exe_app_retina_zoom_ratio_" + package.encode("ascii")
+        # Appending also supersedes an older entry or a tombstone for this key.
+        additions.extend(varint(len(key)) + key + b"\x04\x032.0")
+    end = actual_size + 4
+    needed = end + len(additions)
+    if needed > len(blob):
+        blob.extend(b"\0" * (((needed + 16383) // 16384) * 16384 - len(blob)))
+    blob[end:needed] = additions
+    actual_size += len(additions)
+    struct.pack_into("<I", blob, 0, actual_size)
+    crc = zlib.crc32(blob[4:4 + actual_size]) & 0xFFFFFFFF
+    struct.pack_into("<I", meta, 0, crc)
+    # Tencent MMKV v3+ stores both the current and last-confirmed sizes/CRCs.
+    # Keep the full-write sequence in sync so other readers reload the file.
+    struct.pack_into("<I", meta, 8, (struct.unpack_from("<I", meta, 8)[0] + 1) & 0xFFFFFFFF)
+    if version >= 3:
+        struct.pack_into("<III", meta, 28, actual_size, actual_size, crc)
     backups.capture(PUBLIC_MMKV)
     backups.capture(PUBLIC_MMKV_CRC)
     atomic_write(PUBLIC_MMKV, bytes(blob))
     atomic_write(PUBLIC_MMKV_CRC, bytes(meta))
-    return [f"将 {replacements} 个启动器/游戏入口设为 Retina 2×"]
+    return [f"将 {len(packages)} 个启动器/游戏入口设为 Retina 2×"]
 
 
 def patch_preferences(backups: BackupSet, fps: int) -> list[str]:
@@ -457,7 +648,9 @@ def patch_preferences(backups: BackupSet, fps: int) -> list[str]:
             struct.pack_into("<f", data, record + 4, 0.0)
             found.add(name)
     if "quality_fps" not in found:
-        raise FixError("找不到光遇帧率设置；可能是游戏版本已更新。")
+        # The initial PREF only contains first_open_ts and readback settings.
+        # Graphics preferences are created after the first successful session.
+        return ["帧率设置待首次成功进入游戏后生成；本次保留偏好文件"]
     backups.capture(PREFERENCES)
     atomic_write(PREFERENCES, bytes(data))
     return [f"光遇目标帧率 {fps} FPS、关闭动态模糊"]
@@ -470,8 +663,11 @@ def apply_fix(fps: int) -> list[str]:
     try:
         changes.extend(patch_registries(backups))
         changes.extend(patch_apps_db(backups))
+        changes.extend(patch_fever_shortcuts(backups))
         changes.extend(patch_mmkv(backups))
         changes.extend(patch_preferences(backups, fps))
+        if ensure_gpu_compat():
+            changes.append("Apple M4 Vulkan 设备兼容层")
     except Exception:
         restore_from(backups.root, announce=False)
         raise
@@ -492,12 +688,21 @@ def find_sky_package() -> str | None:
 
 
 def launch() -> None:
+    gpu_compat = start_gpu_compat_engine()
+    if gpu_compat:
+        say("已启用 Apple M4 Vulkan 兼容启动环境。")
     package = find_sky_package()
     child = shortcut_for(package) if package else None
     parent = shortcut_for(PACKAGE_PARENT)
-    if child:
+    if gpu_compat and parent:
+        # Fever 1.18 ignores autoRun on this YYB engine, while its parent entry
+        # reliably joins the already-running compatible engine. Keep the login
+        # and anti-cheat flow intact and let the user press Start in Fever.
+        say("正在启动网易发烧游戏平台；请在平台里点“开始游戏”。")
+        open_new_path(parent)
+    elif child:
         say(f"正在启动《光·遇》：{child.name}")
-        open_path(child)
+        open_new_path(child)
     elif parent:
         say("未找到独立光遇快捷方式，先打开网易发烧游戏平台。")
         open_path(parent)
@@ -540,6 +745,8 @@ def status() -> int:
         "应用宝应用数据库": APPS_DB.exists(),
         "光遇偏好文件": PREFERENCES.exists(),
     }
+    if platform.machine() == "arm64" and not os.environ.get("SKY_YYB_TEST_HOME"):
+        checks["Apple Silicon GPU 兼容层"] = GPU_COMPAT_DYLIB.exists()
     for label, ok in checks.items():
         say(f"{'✓' if ok else '✗'} {label}")
     if SKY_EXE.exists():
