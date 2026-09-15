@@ -83,6 +83,7 @@ M2_WINEVULKAN_RELATIVE = Path(
     "ExeEngineDownload/wine-engine.app/Contents/SharedSupport/wine/lib/"
     "wine/x86_64-windows/winevulkan.dll"
 )
+WINEVULKAN_ORIGINALS_DIR = STATE_ROOT / "vulkan-originals"
 
 # Each tuple is (file offset, exact original bytes, replacement bytes).  These
 # patches affect Wine's Vulkan reporting/creation bridge, not Sky.exe:
@@ -207,6 +208,57 @@ def winevulkan_targets() -> list[Path]:
     return list(dict.fromkeys(path for path in targets if path.exists()))
 
 
+def winevulkan_original_backup(path: Path) -> Path:
+    identity = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    return WINEVULKAN_ORIGINALS_DIR / f"{identity}.winevulkan.dll"
+
+
+def find_historical_winevulkan_original(path: Path) -> bytes | None:
+    backups = STATE_ROOT / "backups"
+    if not backups.exists():
+        return None
+    for root in sorted(backups.iterdir(), reverse=True):
+        manifest = root / "manifest.json"
+        try:
+            items = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for item in items:
+            if item.get("path") != str(path) or not item.get("existed"):
+                continue
+            source = root / str(item.get("backup", ""))
+            if source.exists() and sha256(source) == M2_WINEVULKAN_ORIGINAL_SHA256:
+                return source.read_bytes()
+    return None
+
+
+def preserve_winevulkan_original(path: Path, data: bytes | None = None) -> None:
+    backup = winevulkan_original_backup(path)
+    if backup.exists() and sha256(backup) == M2_WINEVULKAN_ORIGINAL_SHA256:
+        return
+    if data is None:
+        data = find_historical_winevulkan_original(path)
+    if data is None or hashlib.sha256(data).hexdigest() != M2_WINEVULKAN_ORIGINAL_SHA256:
+        raise FixError(f"找不到经过校验的 Wine Vulkan 原版备份：{path}")
+    ensure_private_dir(WINEVULKAN_ORIGINALS_DIR)
+    atomic_write(backup, data, 0o600)
+
+
+def restore_winevulkan_originals() -> int:
+    restored = 0
+    for path in winevulkan_targets():
+        if sha256(path) != M2_WINEVULKAN_PATCHED_SHA256:
+            continue
+        backup = winevulkan_original_backup(path)
+        if not backup.exists() or sha256(backup) != M2_WINEVULKAN_ORIGINAL_SHA256:
+            raise FixError(f"Wine Vulkan 原版恢复副本缺失或校验失败：{path}")
+        atomic_write(path, backup.read_bytes())
+        if sha256(path) != M2_WINEVULKAN_ORIGINAL_SHA256:
+            raise FixError(f"Wine Vulkan 原版恢复后校验失败：{path}")
+        restored += 1
+    return restored
+
+
 def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
     chip = detected_chip()
     if chip not in ("Apple M2", "Apple M4"):
@@ -222,6 +274,7 @@ def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
     for path in targets:
         digest = sha256(path)
         if digest == M2_WINEVULKAN_PATCHED_SHA256:
+            preserve_winevulkan_original(path)
             verified += 1
             continue
         if digest != M2_WINEVULKAN_ORIGINAL_SHA256:
@@ -230,6 +283,7 @@ def patch_m2_vulkan_compat(backups: "BackupSet") -> list[str]:
                 f"{path}（SHA-256 {digest[:16]}…）"
             )
         original = path.read_bytes()
+        preserve_winevulkan_original(path, original)
         transformed = patch_m2_winevulkan_image(original)
         if hashlib.sha256(transformed).hexdigest() != M2_WINEVULKAN_PATCHED_SHA256:
             raise FixError("Apple Silicon Vulkan 修补结果校验失败，未写入。")
@@ -1105,6 +1159,9 @@ def restore_latest() -> None:
     if not LATEST_FILE.exists():
         raise FixError("没有找到可恢复的本地备份。")
     restore_from(Path(LATEST_FILE.read_text(encoding="utf-8").strip()))
+    restored_vulkan = restore_winevulkan_originals()
+    if restored_vulkan:
+        say(f"已恢复 {restored_vulkan} 个 Wine Vulkan 原始组件。")
     restored = restore_shortcut_wrappers()
     if restored:
         say(f"已恢复 {restored} 个应用宝原始启动入口。")

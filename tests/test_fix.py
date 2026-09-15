@@ -204,6 +204,11 @@ class FixTests(unittest.TestCase):
         changes = self.module.patch_m2_vulkan_compat(backups)
         self.assertTrue(changes)
         self.assertTrue(self.module.verified_winevulkan_patch_active())
+        stable = self.module.winevulkan_original_backup(engine_dll)
+        self.assertTrue(stable.exists())
+        self.assertEqual(self.module.sha256(stable), self.module.M2_WINEVULKAN_ORIGINAL_SHA256)
+        self.assertEqual(self.module.restore_winevulkan_originals(), 1)
+        self.assertEqual(self.module.sha256(engine_dll), self.module.M2_WINEVULKAN_ORIGINAL_SHA256)
 
     def test_m4_removes_superseded_injection_environment(self):
         os.environ["SKY_YYB_TEST_CHIP"] = "Apple M4"
