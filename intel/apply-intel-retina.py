@@ -30,10 +30,33 @@ PREFERENCES = (
     / "drive_c/FeverApps/sky/data/ThatGameCompany/com.netease.sky/preferences.sav"
 )
 STATE_ROOT = SUPPORT / "backups"
+FPS_WATCH_LOCK = SUPPORT / "sky-fps-watch.lock"
 
 
 class FixError(RuntimeError):
     pass
+
+
+def acquire_lock(path: Path) -> int | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            return descriptor
+        except FileExistsError:
+            try:
+                pid = int(path.read_text(encoding="ascii"))
+                os.kill(pid, 0)
+                return None
+            except (OSError, ValueError):
+                path.unlink(missing_ok=True)
+    return None
+
+
+def release_lock(path: Path, descriptor: int) -> None:
+    os.close(descriptor)
+    path.unlink(missing_ok=True)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -207,7 +230,7 @@ def patched_preferences(fps: int) -> bytes | None:
         elif name == "kUserPreference_MotionBlurScalar":
             struct.pack_into("<f", data, record + 4, 0.0)
     if not found_fps:
-        raise FixError("找不到光遇帧率设置；可能是游戏版本已更新。")
+        return None
     return bytes(data)
 
 
@@ -224,7 +247,8 @@ def apply(fps: int = 60) -> Path | None:
     if not changed:
         return None
 
-    stop_managed_processes()
+    if any(path in (USER_REG, SYSTEM_REG) for path, _data in changed):
+        stop_managed_processes()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = STATE_ROOT / stamp
     suffix = 0
@@ -245,6 +269,40 @@ def apply(fps: int = 60) -> Path | None:
     for path, data in changed:
         atomic_write(path, data)
     return backup
+
+
+def sky_is_running() -> bool:
+    if os.environ.get("YYB_INTEL_TEST_HOME"):
+        return False
+    marker = str(PREFIX / "drive_c/FeverApps/sky/Sky.exe")
+    return subprocess.run(
+        ["pgrep", "-if", marker],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def watch_fps(fps: int, seconds: int) -> int:
+    descriptor = acquire_lock(FPS_WATCH_LOCK)
+    if descriptor is None:
+        return 0
+    try:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                has_fps = b"quality_fps\0" in PREFERENCES.read_bytes()
+            except OSError:
+                has_fps = False
+            if has_fps and not sky_is_running():
+                backup = apply(fps)
+                if backup:
+                    print(f"光遇 {fps} FPS 配置已保存；备份在：{backup}")
+                return 0
+            time.sleep(2)
+        return 0
+    finally:
+        release_lock(FPS_WATCH_LOCK, descriptor)
 
 
 def restore_latest() -> Path:
@@ -280,7 +338,9 @@ def main() -> int:
     actions.add_argument("--check", action="store_true", help="只检查，不修改")
     actions.add_argument("--stop", action="store_true", help="只关闭本工具管理的 Windows 进程")
     actions.add_argument("--restore", action="store_true", help="恢复最近一次配置备份")
+    actions.add_argument("--watch-fps", action="store_true", help="游戏退出后自动保存帧率")
     parser.add_argument("--fps", type=int, default=60, choices=(30, 60, 120))
+    parser.add_argument("--watch-seconds", type=int, default=6 * 60 * 60)
     args = parser.parse_args()
     try:
         if args.stop:
@@ -295,6 +355,8 @@ def main() -> int:
             backup = restore_latest()
             print(f"已经从备份恢复：{backup}")
             return 0
+        if args.watch_fps:
+            return watch_fps(args.fps, args.watch_seconds)
         backup = apply(args.fps)
         if backup:
             print(f"Retina/DPI 配置已更新；原文件备份在：{backup}")

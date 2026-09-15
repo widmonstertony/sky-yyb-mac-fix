@@ -84,6 +84,11 @@ if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; th
     >>"$log_dir/retina.log" 2>&1 || true
 fi
 
+if [[ "$mode" == "netease-game" && -x "$support_root/bin/apply-intel-retina.py" ]]; then
+  nohup "$support_root/bin/apply-intel-retina.py" --watch-fps --fps 60 \
+    >>"$log_dir/retina.log" 2>&1 </dev/null &!
+fi
+
 if [[ "$mode" == "netease-game" && -n "$fever_target" ]]; then
   if ! pgrep -if "$fever_target" >/dev/null 2>&1; then
     "$support_root/bin/launch-windows-app" netease

@@ -45,6 +45,13 @@ def make_preferences() -> bytes:
     return header + records + b"".join(names)
 
 
+def make_preferences_without_fps() -> bytes:
+    name = b"some_flag\0"
+    string_base = 28 + 8
+    header = b"PREF" + b"\0" * 4 + struct.pack("<4I", 1, 0, 0, 0)
+    return header + struct.pack("<I", string_base) + struct.pack("<II", 0, 1) + name
+
+
 class IntelFixTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -131,6 +138,20 @@ class IntelFixTests(unittest.TestCase):
         self.assertEqual((module.SKY_DIR / "fixture/data.bin").read_bytes(), payload)
         with self.assertRaises(module.DownloadError):
             module.target_for("../outside.bin")
+
+    def test_first_run_preferences_wait_for_game_to_add_fps_field(self):
+        module = load_script(
+            "intel_retina_first_run",
+            REPO / "intel/apply-intel-retina.py",
+            self.home,
+        )
+        module.PREFIX.mkdir(parents=True)
+        module.USER_REG.write_text("WINE REGISTRY Version 2\n", encoding="utf-8")
+        module.SYSTEM_REG.write_text("WINE REGISTRY Version 2\n", encoding="utf-8")
+        module.PREFERENCES.parent.mkdir(parents=True)
+        module.PREFERENCES.write_bytes(make_preferences_without_fps())
+        self.assertIsNone(module.patched_preferences(60))
+        self.assertIsNotNone(module.apply(60))
 
 
 if __name__ == "__main__":
