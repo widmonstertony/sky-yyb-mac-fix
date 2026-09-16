@@ -240,6 +240,7 @@ class IntelFixTests(unittest.TestCase):
         self.assertIn("applicationShouldTerminate", host)
         self.assertIn('mode" == "--stop"', launcher)
         self.assertIn("isWindowsModeRunning", host)
+        self.assertIn("NSTerminateCancel", host)
         self.assertIn("sky-dock-watch.py", launcher)
         self.assertIn("fevergames://mygame/?gameId=63&autoRun=1", launcher)
 

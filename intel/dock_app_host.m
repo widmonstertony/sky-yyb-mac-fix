@@ -4,6 +4,7 @@
 @property(nonatomic, strong) NSTask *launchTask;
 @property(nonatomic, copy) NSArray<NSString *> *launchArguments;
 @property(nonatomic) BOOL terminating;
+@property(nonatomic) BOOL launchTaskFinished;
 @end
 
 @implementation YYBDockAppDelegate
@@ -84,7 +85,10 @@
         (void)finishedTask;
         dispatch_async(dispatch_get_main_queue(), ^{
             YYBDockAppDelegate *delegate = weakSelf;
-            if (delegate && !delegate.terminating) [NSApp terminate:nil];
+            if (delegate && !delegate.terminating) {
+                delegate.launchTaskFinished = YES;
+                [NSApp terminate:nil];
+            }
         });
     };
     NSError *error = nil;
@@ -107,17 +111,21 @@
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     (void)sender;
-    self.terminating = YES;
     NSString *mode = self.launchArguments.firstObject;
-    if ([mode isEqualToString:@"netease"] &&
+    if (!self.launchTaskFinished && [mode isEqualToString:@"netease"] &&
         [self isWindowsModeRunning:@"netease-game"]) {
         // Sky asks FeverGames for its login ticket after its window appears.
-        // Detach instead of killing the bridge so closing the launcher's Dock
-        // icon cannot turn that late ticket hand-off into a fake network error.
-        self.launchTask.terminationHandler = nil;
-        self.launchTask = nil;
-        return NSTerminateNow;
+        // Keep both the bridge and Dock item alive until the game exits, so the
+        // launcher never becomes an unmanageable background-only process.
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = NSAlertStyleInformational;
+        alert.messageText = @"光·遇仍在运行";
+        alert.informativeText =
+            @"网易登录服务需要保持运行。请先从“光·遇”Dock 图标退出游戏，再退出网易游戏启动器。";
+        [alert runModal];
+        return NSTerminateCancel;
     }
+    self.terminating = YES;
     // Stop the event-pump bridge first so it cannot recreate helper
     // processes while the app-specific cleanup is running.
     if (self.launchTask.running) {
