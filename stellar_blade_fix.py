@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Repair Stellar Blade startup and native-resolution output in Tencent YYB Wine."""
+
+from __future__ import annotations
+
+import re
+import struct
+import time
+import zlib
+from pathlib import Path
+
+from sky_yyb_fix import (
+    BackupSet,
+    PUBLIC_MMKV,
+    PUBLIC_MMKV_CRC,
+    SYSTEM_REG,
+    USER_REG,
+    atomic_write,
+    open_new_path,
+    restore_from,
+    stop_related_processes,
+    upsert_reg_value,
+)
+
+
+PACKAGE = "com.tencent.macexe.com.steampowered.steam.3489700"
+APP_ID = "3489700"
+PREFIX = USER_REG.parent
+GAME_ROOT = PREFIX / "drive_c/Program Files (x86)/Steam/steamapps/common/StellarBlade"
+CONFIG_ROOT = PREFIX / "drive_c/users/tencentyyb/AppData/Local/SB/Saved/Config/WindowsNoEditor"
+USER_SETTINGS = CONFIG_ROOT / "GameUserSettings.ini"
+ENGINE_INI = CONFIG_ROOT / "Engine.ini"
+SHORTCUT_URL = PREFIX / "drive_c/users/tencentyyb/Desktop/剑星.url"
+SHORTCUT_APP = Path("/Applications/腾讯应用宝") / f"{PACKAGE}.app"
+STEAM_USERDATA = PREFIX / "drive_c/Program Files (x86)/Steam/userdata"
+
+WIDTH = 3840
+HEIGHT = 2160
+LAUNCH_OPTIONS = (
+    "-NoSplash -NoStartupMovies -log "
+    f"-ResX={WIDTH} -ResY={HEIGHT} -Fullscreen"
+)
+
+
+class RepairError(RuntimeError):
+    pass
+
+
+def set_ini_values(text: str, section: str, values: dict[str, str]) -> str:
+    header = re.compile(rf"(?mi)^\[{re.escape(section)}\]\s*$")
+    match = header.search(text)
+    if not match:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += f"\n[{section}]\n"
+        match = header.search(text)
+        assert match is not None
+    end = text.find("\n[", match.end())
+    if end < 0:
+        end = len(text)
+    block = text[match.start():end]
+    for key, value in values.items():
+        line = f"{key}={value}"
+        pattern = re.compile(rf"(?mi)^{re.escape(key)}=.*$")
+        if pattern.search(block):
+            block = pattern.sub(line, block)
+        else:
+            block = block.rstrip("\n") + "\n" + line + "\n"
+    return text[:match.start()] + block + text[end:]
+
+
+def patch_game_settings(backups: BackupSet) -> None:
+    if not USER_SETTINGS.exists():
+        raise RepairError(f"未找到剑星配置：{USER_SETTINGS}")
+    backups.capture(USER_SETTINGS)
+    text = USER_SETTINGS.read_text(encoding="utf-8-sig")
+    text = set_ini_values(
+        text,
+        "/Script/SB.SBGameUserSettings",
+        {
+            "Sharpen": "1.000000",
+            "SharpenFSR3": "0.850000",
+            "bFirstRun": "False",
+            "bHDDMode": "False",
+            "FrameLimit": "FrameLimit_120",
+            "EnviromentObjectDetail": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "CharacterObjectDetail": "SB_GAMEUSERSETTINGS_HIGH",
+            "EnviromentTextures": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "CharacterTextures": "SB_GAMEUSERSETTINGS_VERYHIGH",
+            "VolumetricFog": "SB_GAMEUSERSETTINGS_LOW",
+            "ShadowQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "EffectQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "EnvironmentQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "Lighting": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "FoliageQuality": "SB_GAMEUSERSETTINGS_LOW",
+            "AmbientOcclusion": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "DepthOfField": "SB_GAMEUSERSETTINGS_OFF",
+            "ScreenSpaceReflection": "SB_GAMEUSERSETTINGS_LOW",
+            "SceneColorFringeQuality": "SB_GAMEUSERSETTINGS_OFF",
+            "GrainQuality": "SB_GAMEUSERSETTINGS_OFF",
+            "MaterialQuality": "SB_GAMEUSERSETTINGS_HIGH",
+            "AntiAliasing": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "NvidiaDLSS": "SB_GAMEUSERSETTINGS_OFF",
+            "NvidiaFrameGeneration": "SB_GAMEUSERSETTINGS_OFF",
+            "NvidiaReflexLowLatency": "SB_GAMEUSERSETTINGS_OFF",
+            "AmdFSR3": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "AmdFrameInterpolation": "SB_GAMEUSERSETTINGS_LOW",
+            "IntelXeSS": "SB_GAMEUSERSETTINGS_OFF",
+            "AnimationQuality": "SB_GAMEUSERSETTINGS_HIGH",
+            "CharacterViewDistance": "1.000000",
+            "EnviromentObjectViewDistance": "0.700000",
+            "UpscalerType": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "SavedNvidiaFrameGeneration": "SB_GAMEUSERSETTINGS_OFF",
+            "SavedNvidiaReflexLowLatency": "SB_GAMEUSERSETTINGS_OFF",
+            "SavedAmdFrameInterpolation": "SB_GAMEUSERSETTINGS_LOW",
+            "bVSync": "False",
+            "bUseVSync": "False",
+            "bUseDynamicResolution": "False",
+            "ResolutionSizeX": str(WIDTH),
+            "ResolutionSizeY": str(HEIGHT),
+            "LastUserConfirmedResolutionSizeX": str(WIDTH),
+            "LastUserConfirmedResolutionSizeY": str(HEIGHT),
+            "DesiredScreenWidth": str(WIDTH),
+            "DesiredScreenHeight": str(HEIGHT),
+            "LastUserConfirmedDesiredScreenWidth": str(WIDTH),
+            "LastUserConfirmedDesiredScreenHeight": str(HEIGHT),
+            "FullscreenMode": "0",
+            "PreferredFullscreenMode": "0",
+            "FrameRateLimit": "120.000000",
+        },
+    )
+    text = set_ini_values(text, "ScalabilityGroups", {"sg.ResolutionQuality": "100.000000"})
+    atomic_write(USER_SETTINGS, text.encode("utf-8"))
+
+
+def patch_movie_settings(backups: BackupSet) -> None:
+    backups.capture(ENGINE_INI)
+    text = ENGINE_INI.read_text(encoding="utf-8-sig") if ENGINE_INI.exists() else ""
+    text = set_ini_values(
+        text,
+        "/Script/MoviePlayer.MoviePlayerSettings",
+        {
+            "bWaitForMoviesToComplete": "False",
+            "bMoviesAreSkippable": "True",
+        },
+    )
+    text = set_ini_values(
+        text,
+        "SystemSettings",
+        {
+            "r.MotionBlurQuality": "0",
+            "r.DepthOfFieldQuality": "0",
+            "r.SceneColorFringeQuality": "0",
+            "r.Tonemapper.GrainQuantization": "0",
+            "r.Streaming.PoolSize": "4096",
+            "r.Streaming.LimitPoolSizeToVRAM": "1",
+        },
+    )
+    atomic_write(ENGINE_INI, text.encode("utf-8"), 0o600)
+
+
+def patch_wine_dpi(backups: BackupSet) -> None:
+    for path in (USER_REG, SYSTEM_REG):
+        if not path.exists():
+            raise RepairError(f"Wine 注册表不存在：{path}")
+        backups.capture(path)
+
+    user = USER_REG.read_text(encoding="utf-8")
+    user = upsert_reg_value(user, "Software\\\\Wine\\\\Mac Driver", "RetinaMode", '"Y"')
+    user = upsert_reg_value(user, "Software\\\\Wine\\\\Direct3D", "VideoMemorySize", '"8192"')
+    layers = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers"
+    for executable in (
+        r"C:\\Program Files (x86)\\Steam\\steamapps\\common\\StellarBlade\\SB.exe",
+        r"C:\\Program Files (x86)\\Steam\\steamapps\\common\\StellarBlade\\SB\\Binaries\\Win64\\SB-Win64-Shipping.exe",
+    ):
+        user = upsert_reg_value(user, layers, executable, '"~ HIGHDPIAWARE"')
+    atomic_write(USER_REG, user.encode("utf-8"))
+
+    system = SYSTEM_REG.read_text(encoding="utf-8")
+    ifeo = "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options"
+    for name in ("SB.exe", "SB-Win64-Shipping.exe"):
+        system = upsert_reg_value(system, ifeo + "\\\\" + name, "dpiAwareness", "dword:00000002")
+    atomic_write(SYSTEM_REG, system.encode("utf-8"))
+
+
+def varint(value: int) -> bytes:
+    result = bytearray()
+    while value >= 128:
+        result.append((value & 127) | 128)
+        value >>= 7
+    result.append(value)
+    return bytes(result)
+
+
+def patch_retina_entry(backups: BackupSet) -> None:
+    if not PUBLIC_MMKV.exists() or not PUBLIC_MMKV_CRC.exists():
+        raise RepairError("未找到应用宝高清配置数据库。")
+    blob = bytearray(PUBLIC_MMKV.read_bytes())
+    meta = bytearray(PUBLIC_MMKV_CRC.read_bytes())
+    actual_size = struct.unpack_from("<I", blob, 0)[0]
+    if actual_size <= 0 or actual_size + 4 > len(blob) or len(meta) < 40:
+        raise RepairError("应用宝高清配置数据库结构异常。")
+    crc = zlib.crc32(blob[4:4 + actual_size]) & 0xFFFFFFFF
+    if struct.unpack_from("<I", meta, 0)[0] != crc:
+        raise RepairError("应用宝高清配置正在被占用，请完全退出应用宝后重试。")
+    version = struct.unpack_from("<I", meta, 4)[0]
+    if version >= 3 and struct.unpack_from("<I", meta, 28)[0] != actual_size:
+        raise RepairError("应用宝高清配置元数据长度不一致。")
+    if any(meta[12:28]) or (len(meta) >= 112 and any(meta[104:112])):
+        raise RepairError("不支持加密或带过期字段的应用宝高清配置。")
+
+    key = b"exe_app_retina_zoom_ratio_" + PACKAGE.encode("ascii")
+    record = varint(len(key)) + key + b"\x04\x032.0"
+    end = actual_size + 4
+    needed = end + len(record)
+    if needed > len(blob):
+        blob.extend(b"\0" * (((needed + 16383) // 16384) * 16384 - len(blob)))
+    blob[end:needed] = record
+    actual_size += len(record)
+    struct.pack_into("<I", blob, 0, actual_size)
+    crc = zlib.crc32(blob[4:4 + actual_size]) & 0xFFFFFFFF
+    struct.pack_into("<I", meta, 0, crc)
+    struct.pack_into("<I", meta, 8, (struct.unpack_from("<I", meta, 8)[0] + 1) & 0xFFFFFFFF)
+    if version >= 3:
+        struct.pack_into("<III", meta, 28, actual_size, actual_size, crc)
+    backups.capture(PUBLIC_MMKV)
+    backups.capture(PUBLIC_MMKV_CRC)
+    atomic_write(PUBLIC_MMKV, bytes(blob))
+    atomic_write(PUBLIC_MMKV_CRC, bytes(meta))
+
+
+def patch_shortcut(backups: BackupSet) -> None:
+    if not SHORTCUT_URL.exists():
+        raise RepairError(f"未找到剑星 Steam 快捷方式：{SHORTCUT_URL}")
+    backups.capture(SHORTCUT_URL)
+    encoded = LAUNCH_OPTIONS.replace(" ", "%20").replace("=", "%3D")
+    text = SHORTCUT_URL.read_text(encoding="ascii")
+    url = f"steam://run/{APP_ID}//{encoded}/"
+    text = re.sub(r"(?mi)^URL=.*$", f"URL={url}", text)
+    atomic_write(SHORTCUT_URL, text.encode("ascii"))
+
+
+def patch_steam_launch_options(backups: BackupSet) -> None:
+    configs = list(STEAM_USERDATA.glob("*/config/localconfig.vdf"))
+    if not configs:
+        raise RepairError("未找到 Steam 用户配置。")
+    changed = 0
+    for path in configs:
+        text = path.read_text(encoding="utf-8")
+        apps = re.search(r"(?m)^\t{4}\"apps\"\s*$", text)
+        if not apps:
+            continue
+        prefix = text[:apps.end()]
+        suffix = text[apps.end():]
+        block = re.compile(
+            rf"(?ms)^(\t{{5}}\"{APP_ID}\"\s*\n\t{{5}}\{{\n)(.*?)(^\t{{5}}\}})"
+        )
+        match = block.search(suffix)
+        if not match:
+            continue
+        body = match.group(2)
+        option_line = f'\t\t\t\t\t\t"LaunchOptions"\t\t"{LAUNCH_OPTIONS}"\n'
+        option_re = re.compile(r'(?m)^\t{6}"LaunchOptions".*\n?')
+        if option_re.search(body):
+            body = option_re.sub(option_line, body)
+        else:
+            body = option_line + body
+        replacement = match.group(1) + body + match.group(3)
+        suffix = suffix[:match.start()] + replacement + suffix[match.end():]
+        backups.capture(path)
+        atomic_write(path, (prefix + suffix).encode("utf-8"))
+        changed += 1
+    if not changed:
+        raise RepairError("Steam 配置里没有找到剑星的启动项。")
+
+
+def apply() -> Path:
+    if not (GAME_ROOT / "SB/Binaries/Win64/SB-Win64-Shipping.exe").exists():
+        raise RepairError("没有找到完整的剑星安装。")
+    stop_related_processes()
+    backups = BackupSet()
+    try:
+        patch_game_settings(backups)
+        patch_movie_settings(backups)
+        patch_wine_dpi(backups)
+        patch_retina_entry(backups)
+        patch_shortcut(backups)
+        patch_steam_launch_options(backups)
+        backups.finish()
+    except Exception:
+        restore_from(backups.root, announce=False)
+        raise
+    return backups.root
+
+
+def launch() -> None:
+    if not SHORTCUT_APP.exists():
+        raise RepairError(f"未找到启动台剑星入口：{SHORTCUT_APP}")
+    open_new_path(SHORTCUT_APP)
+
+
+def main() -> int:
+    try:
+        backup = apply()
+        print("剑星修复完成：")
+        print("  ✓ 应用宝子入口 Retina 2×")
+        print(f"  ✓ 输出分辨率 {WIDTH}×{HEIGHT}，FSR 3 质量模式")
+        print("  ✓ FSR 3 插帧开启，目标上限 120 FPS（不锁 60）")
+        print("  ✓ 人物高细节/超高纹理，关闭景深、动态模糊与色差")
+        print("  ✓ 跳过启动影片等待，并启用启动日志")
+        print("  ✓ 剑星进程 High-DPI 感知与 8 GB 显存预算")
+        print(f"  ✓ 原配置备份：{backup}")
+        time.sleep(1)
+        launch()
+        return 0
+    except RepairError as exc:
+        print(f"错误：{exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

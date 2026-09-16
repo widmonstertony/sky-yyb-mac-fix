@@ -13,3 +13,15 @@ The binary patch is applied only when the chip is exactly Apple M2 or Apple M4 a
 On Intel, the same `install.command` automatically uses Tencent's SHA-256-pinned legacy x86_64 engine, installs Windows Steam and Fever Games, enables true Retina rendering, and mirrors installed games into macOS Launchpad. Because the legacy engine's Fever download IPC stalls on current macOS, an explicit Sky download click is resumed from NetEase's public official manifest/CDN with per-file MD5 verification. No proprietary binary is stored in this repository. MetalFX/frame generation is not available in this Intel engine.
 
 This project is not affiliated with Tencent, NetEase, or thatgamecompany. It does not bypass authentication, anti-cheat, purchases, or server checks. Use your own legitimate account.
+
+## Extra: Stellar Blade on Apple M4
+
+If Stellar Blade is already installed through the Windows Steam client inside
+YYB, run `python3 stellar_blade_fix.py`. This applies 3840x2160 output, 2x
+Retina backing, FSR 3 Quality upscaling and frame interpolation, with a 120 FPS
+cap. Character detail and textures are prioritized while expensive environment
+settings are reduced for a 16 GB unified-memory Mac. Depth of field, motion
+blur, chromatic aberration, and film grain are disabled for a clearer subject.
+The output remains physical 4K; FSR reconstructs that output from a lower
+internal resolution to create headroom for 60 FPS or better. The script backs
+up every changed file and does not alter the Sky Vulkan patch or save data.
