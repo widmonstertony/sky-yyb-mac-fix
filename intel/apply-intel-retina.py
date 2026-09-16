@@ -420,12 +420,16 @@ def watch_fps(fps: int, seconds: int) -> int:
         return 0
     try:
         deadline = time.time() + seconds
+        seen_sky = False
         while time.time() < deadline:
             try:
                 has_fps = b"quality_fps\0" in PREFERENCES.read_bytes()
             except OSError:
                 has_fps = False
-            if has_fps and not sky_is_running():
+            running = sky_is_running()
+            if running:
+                seen_sky = True
+            if seen_sky and has_fps and not running:
                 backup = apply(fps)
                 if backup:
                     print(f"光遇 {fps} FPS 配置已保存；备份在：{backup}")

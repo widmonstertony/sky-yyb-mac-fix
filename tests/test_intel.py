@@ -207,6 +207,12 @@ class IntelFixTests(unittest.TestCase):
         self.assertIsNone(module.patched_preferences(60))
         self.assertIsNotNone(module.apply(60))
 
+        source = (REPO / "intel/apply-intel-retina.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("seen_sky = False", source)
+        self.assertIn("if seen_sky and has_fps and not running", source)
+
     def test_setup_patches_real_engine_retina_scale(self):
         launcher = (REPO / "intel/launch-windows-app").read_text(encoding="utf-8")
         setup = (REPO / "intel/1-setup.command").read_text(encoding="utf-8")
@@ -241,8 +247,40 @@ class IntelFixTests(unittest.TestCase):
         self.assertIn('mode" == "--stop"', launcher)
         self.assertIn("isWindowsModeRunning", host)
         self.assertIn("NSTerminateCancel", host)
-        self.assertIn("sky-dock-watch.py", launcher)
+        self.assertIn("com.tencent.yyb.wine.appWindowShown", host)
+        self.assertNotIn("sky-dock-watch.py", launcher)
+        self.assertIn('mode" == "steam-game"', launcher)
         self.assertIn("fevergames://mygame/?gameId=63&autoRun=1", launcher)
+        self.assertIn("everGamesWeb", launcher)
+        self.assertIn('nohup "$bridge" "$fever_launcher"', launcher)
+        self.assertNotIn('"$support_root/wine-loader" "$fever_launcher"', launcher)
+        self.assertIn("YYB_LIFETIME_EXECUTABLE", launcher)
+
+        bridge = (REPO / "intel/launch_via_engine.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("executeExeFile", bridge)
+        self.assertIn("directChildrenWithExecutableName", bridge)
+        self.assertIn("lifetimeTarget != target", bridge)
+
+        agent = (REPO / "intel/launchpad-sync-agent.plist").read_text(encoding="utf-8")
+        self.assertNotIn("StartInterval", agent)
+
+    def test_native_library_gui_is_installed_and_uses_existing_adapter(self):
+        installer = (REPO / "intel/install-gui.command").read_text(encoding="utf-8")
+        sync_installer = (REPO / "intel/7-install-launchpad-sync.command").read_text(
+            encoding="utf-8"
+        )
+        gui = (REPO / "intel/gui/YYBGameLauncher.m").read_text(encoding="utf-8")
+        notice = (REPO / "intel/gui/NOTICE.md").read_text(encoding="utf-8")
+        self.assertIn("-framework Cocoa", installer)
+        self.assertIn("x86_64", installer)
+        self.assertIn("Windows 游戏.app", installer)
+        self.assertIn("install-gui.command", sync_installer)
+        self.assertIn("YYBIntelLaunchpadManaged", gui)
+        self.assertIn("sync-launchpad-apps.py", gui)
+        self.assertIn("apply-intel-retina.py", gui)
+        self.assertIn("Mac Wine Launcher", notice)
 
     def test_process_helper_scopes_each_windows_app(self):
         module = load_script(
@@ -254,11 +292,30 @@ class IntelFixTests(unittest.TestCase):
             " 103 C:\\Program Files\\FeverGames\\1.0\\FeverGamesInstaller.exe\n"
             " 104 /prefix/drive_c/FeverApps/sky/Sky.exe --start_from_launcher=1\n"
             " 105 /prefix/drive_c/Program Files/FeverGames/1.0/FeverGamesInstaller.exe\n"
+            " 107 /prefix/com.tencent.yybmac.wine.engine/links/FeverGamesInstaller.exe\n"
+            " 108 C:\\Program Files\\FeverGames\\1.0\\FeverGamesWeb --type=renderer\n"
+            " 109 /Users/example/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/ipcserver\n"
         )
         with mock.patch.object(module.subprocess, "check_output", return_value=listing):
             self.assertEqual(set(module.processes("netease-game")), {101, 104})
             self.assertEqual(set(module.processes("steam")), {102})
-            self.assertEqual(set(module.processes("netease")), {103, 105})
+            self.assertEqual(set(module.processes("netease")), {103, 105, 108})
+            self.assertEqual(
+                set(
+                    module.processes(
+                        "steam-game",
+                        [str(self.home / "prefix/drive_c/Games/My Game")],
+                    )
+                ),
+                set(),
+            )
+
+        steam_game = self.home / "prefix/drive_c/Program Files (x86)/Steam/steamapps/common/Game"
+        listing += f" 106 {steam_game}/Binaries/Game.exe\n"
+        with mock.patch.object(module.subprocess, "check_output", return_value=listing):
+            self.assertEqual(
+                set(module.processes("steam-game", [str(steam_game)])), {106}
+            )
 
 
 if __name__ == "__main__":

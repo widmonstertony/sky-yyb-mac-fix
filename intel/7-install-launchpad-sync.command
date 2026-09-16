@@ -14,11 +14,10 @@ ditto "$PROJECT_DIR/launch-windows-app" "$BIN_DIR/launch-windows-app"
 ditto "$PROJECT_DIR/sync-launchpad-apps.py" "$BIN_DIR/sync-launchpad-apps.py"
 ditto "$PROJECT_DIR/apply-intel-retina.py" "$BIN_DIR/apply-intel-retina.py"
 ditto "$PROJECT_DIR/download-sky.py" "$BIN_DIR/download-sky.py"
-ditto "$PROJECT_DIR/sky-dock-watch.py" "$BIN_DIR/sky-dock-watch.py"
 ditto "$PROJECT_DIR/windows-app-process.py" "$BIN_DIR/windows-app-process.py"
+rm -f "$BIN_DIR/sky-dock-watch.py"
 chmod +x "$BIN_DIR/launch-windows-app" "$BIN_DIR/sync-launchpad-apps.py" \
   "$BIN_DIR/apply-intel-retina.py" "$BIN_DIR/download-sky.py" \
-  "$BIN_DIR/sky-dock-watch.py" \
   "$BIN_DIR/windows-app-process.py"
 
 clang -fobjc-arc -O2 -Wall -Wextra -framework Cocoa \
@@ -36,19 +35,29 @@ codesign --force --deep --sign - "$SYSTEM_APPS/Steam（Windows）.app" >/dev/nul
 codesign --force --deep --sign - "$SYSTEM_APPS/网易游戏启动器.app" >/dev/null
 
 ditto "$PROJECT_DIR/launchpad-sync-agent.plist" "$AGENT"
+/usr/libexec/PlistBuddy -c "Add :WatchPaths array" "$AGENT"
+/usr/libexec/PlistBuddy -c \
+  "Add :WatchPaths:0 string $HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine/drive_c/Program Files (x86)/Steam/steamapps" \
+  "$AGENT"
+/usr/libexec/PlistBuddy -c \
+  "Add :WatchPaths:1 string $HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine/user.reg" \
+  "$AGENT"
 launchctl bootout "$DOMAIN" "$AGENT" >/dev/null 2>&1 || true
 launchctl bootstrap "$DOMAIN" "$AGENT"
 launchctl enable "$DOMAIN/local.yybintel.launchpad-sync"
 
 "$BIN_DIR/sync-launchpad-apps.py"
+"$PROJECT_DIR/install-gui.command"
 
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
   "$LSREGISTER" -f "$SYSTEM_APPS/Steam（Windows）.app"
   "$LSREGISTER" -f "$SYSTEM_APPS/网易游戏启动器.app"
+  "$LSREGISTER" -f "$SYSTEM_APPS/Windows 游戏.app"
 fi
 
 mdimport -i "$SYSTEM_APPS/Steam（Windows）.app" >/dev/null 2>&1 || true
 mdimport -i "$SYSTEM_APPS/网易游戏启动器.app" >/dev/null 2>&1 || true
+mdimport -i "$SYSTEM_APPS/Windows 游戏.app" >/dev/null 2>&1 || true
 
-print "系统应用同步已启用。新安装的游戏会在 60 秒内出现在 macOS 应用列表。"
+print "系统应用事件同步已启用。Windows 游戏库和新安装的游戏会出现在 macOS 应用列表。"

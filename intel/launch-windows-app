@@ -15,9 +15,8 @@ dxvk="$engine/Contents/Frameworks/render/dxvk/wine"
 log_dir="$support_root/logs"
 
 if [[ "$mode" == "--stop" ]]; then
-  stop_mode="${extra_args[1]:-}"
   if [[ -x "$support_root/bin/windows-app-process.py" ]]; then
-    exec "$support_root/bin/windows-app-process.py" --stop "$stop_mode"
+    exec "$support_root/bin/windows-app-process.py" --stop "${extra_args[@]}"
   fi
   exit 0
 fi
@@ -31,6 +30,7 @@ if [[ "$(uname -m)" != "x86_64" ]]; then
   exit 1
 fi
 
+process_args=()
 case "$mode" in
   steam)
     launcher="tencent"
@@ -39,6 +39,21 @@ case "$mode" in
     log_file="$log_dir/steam.log"
     launch_args=()
     ;;
+  steam-game)
+    game_id="${extra_args[1]:-}"
+    install_path="${extra_args[2]:-}"
+    if [[ "$game_id" != <-> || -z "$install_path" ]]; then
+      show_error "无法启动" "这个 Steam 游戏的启动信息不完整。"
+      exit 1
+    fi
+    launcher="tencent"
+    prefix="$HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
+    target="$prefix/drive_c/Program Files (x86)/Steam/Steam.exe"
+    log_file="$log_dir/steam.log"
+    launch_args=(-applaunch "$game_id")
+    process_args=("$install_path")
+    extra_args=()
+    ;;
   netease)
     launcher="tencent"
     prefix="$HOME/Library/Application Support/com.tencent.yybmac.wine.engine/wine"
@@ -46,6 +61,9 @@ case "$mode" in
     candidates=("$fever_root"/*/FeverGamesInstaller.exe(N.om[1]))
     target="${candidates[1]:-}"
     log_file="$log_dir/netease.log"
+    if [[ -n "$target" ]]; then
+      export YYB_LIFETIME_EXECUTABLE="${target:h}/FeverGamesWeb.exe"
+    fi
     # The old Intel engine cannot finish FeverGames' downloader IPC. A watcher
     # below hands only an explicit Sky download click to the official CDN
     # resume helper while the stable YYB window bridge keeps pumping events.
@@ -88,15 +106,9 @@ fi
 
 process_helper="$support_root/bin/windows-app-process.py"
 mkdir -p "$log_dir"
-if [[ "$mode" == "netease" && -x "$support_root/bin/sky-dock-watch.py" ]]; then
-  # A game started by FeverGames is not a macOS process. Attach its generated
-  # app as soon as Sky.exe appears so it gets its own Dock icon and Quit item.
-  nohup "$support_root/bin/sky-dock-watch.py" \
-    >>"$log_dir/sky-dock-watch.log" 2>&1 </dev/null &!
-fi
 if [[ "${YYB_DOCK_HOST:-0}" == "1" && -x "$process_helper" ]] && \
-   "$process_helper" --check "$mode"; then
-  exec "$process_helper" --wait "$mode"
+   "$process_helper" --check "$mode" "${process_args[@]}"; then
+  exec "$process_helper" --wait "$mode" "${process_args[@]}"
 fi
 
 if [[ "$mode" == netease* && -x "$support_root/bin/apply-intel-retina.py" ]]; then
@@ -124,37 +136,81 @@ if [[ ! -x "$bridge" ]]; then
   exit 1
 fi
 
-engine_cold_start=false
-if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
-  engine_cold_start=true
-  /usr/bin/open -n \
-    --env "GFX_BACKEND_PATH=$dxvk" \
-    --env "WINE_RETINA_MODE=1" \
-    --env "WINE_RETINA_SCALE=2.0" \
-    --env "DXVK_HUD=0" \
-    --env "MTL_HUD_ENABLED=0" \
-    --env "D3DM_ENABLE_METALFX=0" \
-    --env "WINEDEBUG=-all" \
-    "$engine"
+# Steam still uses Tencent's engine app bootstrap. FeverGames lets the native
+# bridge own cold-start detection and its in-session retry.
+if [[ "$mode" != netease* ]]; then
+  engine_cold_start=false
+  if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
+    engine_cold_start=true
+    /usr/bin/open -n \
+      --env "GFX_BACKEND_PATH=$dxvk" \
+      --env "WINE_RETINA_MODE=1" \
+      --env "WINE_RETINA_SCALE=2.0" \
+      --env "DXVK_HUD=0" \
+      --env "MTL_HUD_ENABLED=0" \
+      --env "D3DM_ENABLE_METALFX=0" \
+      --env "WINEDEBUG=-all" \
+      "$engine"
 
-  for _ in {1..150}; do
-    pgrep -f "$engine_server" >/dev/null 2>&1 && break
-    sleep 0.1
+    for _ in {1..150}; do
+      pgrep -f "$engine_server" >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+  fi
+
+  if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
+    show_error "PC 游戏引擎没有启动" "请稍后重试；详细信息保存在 YYBIntelLauncher 日志中。"
+    exit 1
+  fi
+
+  if [[ "$engine_cold_start" == true ]]; then
+    sleep 14
+  fi
+fi
+
+if [[ "$mode" == "steam-game" ]]; then
+  # The Steam launcher owns Tencent's Cocoa event pump. Start it first, then
+  # send -applaunch through a short-lived Wine client in the same prefix. This
+  # mirrors CrossOver/YYB launchers without creating a second Steam instance.
+  if ! "$process_helper" --check steam; then
+    if [[ -d "/Applications/Steam（Windows）.app" ]]; then
+      /usr/bin/open -g "/Applications/Steam（Windows）.app"
+    else
+      YYB_DOCK_HOST=0 "$support_root/bin/launch-windows-app" steam
+    fi
+    for _ in {1..240}; do
+      "$process_helper" --check steam && break
+      sleep 0.25
+    done
+  fi
+  if ! "$process_helper" --check steam; then
+    show_error "Windows 版 Steam 没有就绪" "请先打开 Windows 版 Steam 并完成登录。"
+    exit 1
+  fi
+
+  wine_root="$engine/Contents/SharedSupport/wine"
+  frameworks="$engine/Contents/Frameworks"
+  cd "${target:h}"
+  nohup env \
+    YYB_NTDLL_PATH="$wine_root/lib/wine/x86_64-unix/ntdll.so" \
+    YYB_WINESERVER_HOST_APP="$support_root/WineServerHost.app" \
+    WINEPREFIX="$prefix" \
+    WINESERVER="$support_root/wineserver-wrapper" \
+    WINELOADER="$support_root/wine-loader" \
+    WINEDLLPATH="$wine_root/lib/wine" \
+    DYLD_FALLBACK_LIBRARY_PATH="$frameworks" \
+    GFX_BACKEND_PATH="$dxvk" \
+    WINE_RETINA_MODE=1 WINE_RETINA_SCALE=2.0 WINEDEBUG=-all \
+    "$support_root/wine-loader" "$target" "${launch_args[@]}" \
+    >>"$log_file" 2>&1 </dev/null &!
+  for _ in {1..1200}; do
+    if "$process_helper" --check steam-game "${process_args[@]}"; then
+      exec "$process_helper" --wait steam-game "${process_args[@]}"
+    fi
+    sleep 0.25
   done
-fi
-
-if ! pgrep -f "$engine_server" >/dev/null 2>&1; then
-  show_error "PC 游戏引擎没有启动" "请稍后重试；详细信息保存在 YYBIntelLauncher 日志中。"
+  show_error "Steam 游戏没有启动" "Steam 已收到启动请求，但没有检测到游戏进程。"
   exit 1
-fi
-
-# The wineserver process appears several seconds before wineboot and the
-# Windows services are ready. Launching an EXE in that gap reports success to
-# Tencent's bridge, but the Windows process exits before creating a window.
-if [[ "$engine_cold_start" == true ]]; then
-  # On this engine the server socket appears first, while wineboot finishes
-  # about 12 seconds later. Give the cold boot a conservative margin.
-  sleep 14
 fi
 
 if [[ "$mode" == "netease-game" ]]; then
@@ -165,7 +221,9 @@ if [[ "$mode" == "netease-game" ]]; then
     show_error "网易启动器不完整" "找不到负责登录交接的网易启动器组件。"
     exit 1
   fi
+  netease_was_started=false
   if ! "$process_helper" --check netease; then
+    netease_was_started=true
     if [[ -d "/Applications/网易游戏启动器.app" ]]; then
       /usr/bin/open -g "/Applications/网易游戏启动器.app"
     else
@@ -181,7 +239,25 @@ if [[ "$mode" == "netease-game" ]]; then
     exit 1
   fi
 
-  cd "${fever_launcher:h}"
+  # FeverGamesInstaller appears well before its CEF page and IPC receiver are
+  # usable. Sending the URL during that gap merely opens a second launcher and
+  # loses autoRun. Wait for the web layer on a cold launch, then submit the
+  # official URI through Tencent's own Cocoa/Wine bridge. This preserves the
+  # NetEase QR-login ticket; launching Sky.exe directly produces UniSDK 202.
+  if [[ "$netease_was_started" == true ]]; then
+    web_count=0
+    for _ in {1..480}; do
+      web_count="$(ps -axo comm= 2>/dev/null | grep -c '[F]everGamesWeb' || true)"
+      (( web_count >= 2 )) && break
+      sleep 0.25
+    done
+    if (( web_count < 2 )); then
+      show_error "网易启动器加载超时" "请退出后重新打开光·遇；游戏和登录数据不会受影响。"
+      exit 1
+    fi
+    sleep 2
+  fi
+
   nohup "$bridge" "$fever_launcher" \
     "fevergames://mygame/?gameId=63&autoRun=1" \
     >>"$log_dir/sky.log" 2>&1 </dev/null &!

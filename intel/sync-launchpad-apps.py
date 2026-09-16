@@ -61,10 +61,46 @@ class Game:
         return f"local.yybintel.game.{self.platform}.{self.game_id}"
 
     @property
+    def package_name(self) -> str:
+        if self.platform == "steam":
+            return f"com.tencent.macexe.com.steampowered.steam.{self.game_id}"
+        return f"com.tencent.macexe.com.45a7ca33.{self.game_id}"
+
+    @property
     def launch_arguments(self) -> list[str]:
         if self.platform == "steam":
-            return ["steam", "-applaunch", self.game_id]
+            return ["steam-game", self.game_id, str(self.install_path)]
         return ["netease-game", self.game_id]
+
+
+IGNORED_GAME_EXECUTABLES = {
+    "crashhandler.exe",
+    "crashreporter.exe",
+    "unitycrashhandler32.exe",
+    "unitycrashhandler64.exe",
+    "unins000.exe",
+    "uninstall.exe",
+}
+
+
+def game_executable_names(game: Game) -> list[str]:
+    if game.platform == "netease" and game.game_id == "63":
+        return ["Sky.exe"]
+    names: set[str] = set()
+    try:
+        for root, directories, files in os.walk(game.install_path):
+            relative_depth = len(Path(root).relative_to(game.install_path).parts)
+            if relative_depth >= 6:
+                directories[:] = []
+            for name in files:
+                folded = name.casefold()
+                if folded.endswith(".exe") and folded not in IGNORED_GAME_EXECUTABLES:
+                    names.add(name)
+                    if len(names) >= 256:
+                        return sorted(names, key=str.casefold)
+    except OSError:
+        pass
+    return sorted(names, key=str.casefold)
 
 
 def valve_pairs(text: str) -> dict[str, str]:
@@ -414,9 +450,11 @@ def write_game_app(game: Game) -> Path:
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         MANAGED_KEY: True,
+        "YYBPackageName": game.package_name,
         "YYBPlatform": game.platform,
         "YYBGameID": game.game_id,
         "YYBInstallPath": str(game.install_path),
+        "YYBWindowsExecutables": game_executable_names(game),
         "YYBLaunchArguments": game.launch_arguments,
     }
     with (contents / "Info.plist").open("wb") as stream:

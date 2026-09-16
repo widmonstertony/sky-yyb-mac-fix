@@ -8,6 +8,7 @@
 #include <string>
 #include <strings.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 class PathUtils {
@@ -21,6 +22,10 @@ enum class WapErrorCode : int;
 class WapManager {
 public:
     static WapManager &instance();
+    void executeExeFile(
+        const std::string &package,
+        const std::string &exe,
+        const std::function<void(WapErrorCode, const std::string &)> &callback);
     void doLaunch(
         const std::string &package,
         const std::string &exe,
@@ -40,6 +45,17 @@ extern "C" long wineserver_kill_all_processes(...) { return 0; }
 extern "C" long wineserver_kill_processe(...) { return 0; }
 extern "C" long wineserver_shutdown_timeout(...) { return 0; }
 extern "C" long wineserver_wake_launch_thread(...) { return 0; }
+
+static bool executableNamesEqual(const std::string &expected,
+                                 const std::string &actual) {
+    if (strcasecmp(expected.c_str(), actual.c_str()) == 0) return true;
+    const std::filesystem::path expectedPath(expected);
+    if (strcasecmp(expectedPath.extension().string().c_str(), ".exe") == 0 &&
+        strcasecmp(expectedPath.stem().string().c_str(), actual.c_str()) == 0) {
+        return true;
+    }
+    return false;
+}
 
 static bool processWithExecutableIsRunning(
     const std::filesystem::path &target) {
@@ -63,10 +79,43 @@ static bool processWithExecutableIsRunning(
         const int length = proc_pidpath(pids[i], path, sizeof(path));
         if (length > 0 && strcasecmp(expected.c_str(), path) == 0) return true;
         const int nameLength = proc_name(pids[i], name, sizeof(name));
-        if (nameLength > 0 &&
-            strcasecmp(expectedName.c_str(), name) == 0) return true;
+        if (nameLength > 0 && executableNamesEqual(expectedName, name)) return true;
     }
     return false;
+}
+
+static std::vector<pid_t> directChildrenWithExecutableName(
+    pid_t parent, const std::filesystem::path &target) {
+    std::vector<pid_t> found;
+    const int required = proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
+    if (required <= 0) return found;
+    std::vector<pid_t> pids(
+        static_cast<size_t>(required) / sizeof(pid_t) + 32);
+    const int bytes = proc_listpids(PROC_ALL_PIDS, 0, pids.data(),
+                                   static_cast<int>(pids.size() *
+                                                    sizeof(pid_t)));
+    if (bytes <= 0) return found;
+
+    const std::string expectedName = target.filename().string();
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    const size_t count = static_cast<size_t>(bytes) / sizeof(pid_t);
+    for (size_t i = 0; i < count; ++i) {
+        if (pids[i] <= 0) continue;
+        proc_bsdinfo info{};
+        if (proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &info,
+                         sizeof(info)) != sizeof(info) ||
+            info.pbi_ppid != static_cast<uint32_t>(parent)) {
+            continue;
+        }
+        const int length = proc_pidpath(pids[i], path, sizeof(path));
+        if (length <= 0) continue;
+        if (executableNamesEqual(
+                expectedName,
+                std::filesystem::path(path).filename().string())) {
+            found.push_back(pids[i]);
+        }
+    }
+    return found;
 }
 
 int main(int argc, char **argv) {
@@ -80,6 +129,10 @@ int main(int argc, char **argv) {
         strcasecmp(requestedTarget.filename().string().c_str(), "Steam.exe") == 0;
 
     wine_engine_init();
+    // The stock executable establishes its bundle-relative paths from main().
+    // A custom host needs to do this explicitly, but only after engine init has
+    // configured YYBMacLog (PathUtils::init logs and traps if called earlier).
+    PathUtils::init();
 
     // Tencent currently resets an unregistered app to its Apple-Silicon GPTK
     // default during initialization.  Re-apply the Intel-safe DXVK path after
@@ -118,48 +171,115 @@ int main(int argc, char **argv) {
     std::string detail;
     const std::filesystem::path target =
         std::filesystem::canonical(std::filesystem::path(argv[1]));
+    std::filesystem::path lifetimeTarget = target;
+    if (const char *configuredLifetime =
+            std::getenv("YYB_LIFETIME_EXECUTABLE")) {
+        if (*configuredLifetime) {
+            std::error_code error;
+            const auto resolved = std::filesystem::canonical(
+                std::filesystem::path(configuredLifetime), error);
+            if (!error) lifetimeTarget = resolved;
+        }
+    }
     const std::string package =
         isSteamTarget
             ? "com.tencent.macexe.com.steampowered.steam"
             : "com.tencent.macexe.com.45a7ca33";
-    WapManager::instance().doLaunch(
-        package, target.string(), args,
-        [&](WapErrorCode code, const std::string &message) {
+    bool launchedProcessSeen = false;
+    auto submitLaunch = [&]() {
+        finished.store(false);
+        result = 70;
+        detail.clear();
+        const auto callback = [&](WapErrorCode code,
+                                  const std::string &message) {
             result = static_cast<int>(code);
             detail = message;
             finished.store(true);
-        });
+        };
+        WapManager::instance().doLaunch(
+            package, target.string(), args, callback);
+    };
 
-    bool launchedProcessSeen = false;
-    for (int i = 0; i < 300 && !finished.load(); ++i) {
-        wine_engine_process_macos_events();
-        if (processWithExecutableIsRunning(target)) {
-            launchedProcessSeen = true;
-            break;
+    std::vector<pid_t> bootstrapChildren;
+    const bool needsLocalExeBootstrap =
+        !isSteamTarget && lifetimeTarget != target &&
+        !processWithExecutableIsRunning(lifetimeTarget);
+    if (needsLocalExeBootstrap) {
+        // Tencent's old Intel engine cannot complete a cold local-EXE request
+        // until its prefix wineserver exists. executeExeFile is the engine's
+        // own bootstrap path: keep it in this host/session, wait for its loader
+        // child, then submit the real argument-bearing Wap request. The first
+        // child becomes FeverGames' long-lived main process, so it must remain
+        // alive after the argument-bearing bridge creates the CEF web layer.
+        finished.store(false);
+        WapManager::instance().executeExeFile(
+            package, target.string(),
+            [&](WapErrorCode code, const std::string &message) {
+                result = static_cast<int>(code);
+                detail = message;
+                finished.store(true);
+            });
+        for (int i = 0; i < 200 && bootstrapChildren.empty(); ++i) {
+            wine_engine_process_macos_events();
+            bootstrapChildren = directChildrenWithExecutableName(
+                getpid(), target);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (bootstrapChildren.empty()) {
+            if (!detail.empty()) std::cerr << detail << "\n";
+            if (!finished.load()) return 75;
+            if (result != 0) return result;
+            return 76;
+        }
+        for (int i = 0; i < 60; ++i) {
+            wine_engine_process_macos_events();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        submitLaunch();
+        for (int i = 0; i < 600; ++i) {
+            wine_engine_process_macos_events();
+            if (processWithExecutableIsRunning(lifetimeTarget)) {
+                launchedProcessSeen = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    } else {
+        // Steam and warm local apps can use the normal path immediately. A
+        // cold Steam prefix may acknowledge the first request during wineboot,
+        // so retry it once while retaining the same event-pump host.
+        for (int attempt = 0; attempt < 2 && !launchedProcessSeen; ++attempt) {
+            submitLaunch();
+            const int ticks = attempt == 0 ? 150 : 300;
+            for (int i = 0; i < ticks; ++i) {
+                wine_engine_process_macos_events();
+                if (processWithExecutableIsRunning(lifetimeTarget)) {
+                    launchedProcessSeen = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!detail.empty()) std::cerr << detail << "\n";
+        }
     }
-    if (!detail.empty()) std::cerr << detail << "\n";
     if (!launchedProcessSeen) {
         if (!finished.load()) return 75;
         if (result != 0) return result;
+        return 76;
     }
 
     // Tencent's host must continue pumping Cocoa events for the lifetime of
     // the top-level Windows process.  Exiting the host after startup leaves
     // modern Steam's main loop stalled even though its PE process remains.
-    bool seen = launchedProcessSeen;
+    bool seen = true;
     int missingTicks = 0;
-    int prelaunchTicks = 0;
     for (;;) {
         wine_engine_process_macos_events();
-        if (processWithExecutableIsRunning(target)) {
+        if (processWithExecutableIsRunning(lifetimeTarget)) {
             seen = true;
             missingTicks = 0;
         } else if (seen) {
             if (++missingTicks >= 200) break;
-        } else if (++prelaunchTicks >= 600) {
-            break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }

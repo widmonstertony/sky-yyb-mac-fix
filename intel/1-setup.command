@@ -158,13 +158,13 @@ chmod +x "$PROJECT_DIR/wineserver-wrapper" \
   "$PROJECT_DIR/4-run-netease.command" \
   "$PROJECT_DIR/5-run-steam.command" \
   "$PROJECT_DIR/7-install-launchpad-sync.command" \
+  "$PROJECT_DIR/install-gui.command" \
   "$PROJECT_DIR/install-all.command" \
   "$PROJECT_DIR/install.command" \
   "$PROJECT_DIR/restore.command" \
   "$PROJECT_DIR/launch-windows-app" \
   "$PROJECT_DIR/apply-intel-retina.py" \
   "$PROJECT_DIR/download-sky.py" \
-  "$PROJECT_DIR/sky-dock-watch.py" \
   "$PROJECT_DIR/windows-app-process.py" \
   "$PROJECT_DIR/sync-launchpad-apps.py"
 
