@@ -79,36 +79,36 @@ def patch_game_settings(backups: BackupSet) -> None:
         "/Script/SB.SBGameUserSettings",
         {
             "Sharpen": "1.000000",
-            "SharpenFSR3": "0.850000",
+            "SharpenFSR3": "0.900000",
             "bFirstRun": "False",
             "bHDDMode": "False",
             "FrameLimit": "FrameLimit_120",
-            "EnviromentObjectDetail": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "EnviromentObjectDetail": "SB_GAMEUSERSETTINGS_LOW",
             "CharacterObjectDetail": "SB_GAMEUSERSETTINGS_HIGH",
-            "EnviromentTextures": "SB_GAMEUSERSETTINGS_MEDIUM",
-            "CharacterTextures": "SB_GAMEUSERSETTINGS_VERYHIGH",
-            "VolumetricFog": "SB_GAMEUSERSETTINGS_LOW",
-            "ShadowQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
-            "EffectQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
-            "EnvironmentQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
-            "Lighting": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "EnviromentTextures": "SB_GAMEUSERSETTINGS_LOW",
+            "CharacterTextures": "SB_GAMEUSERSETTINGS_HIGH",
+            "VolumetricFog": "SB_GAMEUSERSETTINGS_OFF",
+            "ShadowQuality": "SB_GAMEUSERSETTINGS_LOW",
+            "EffectQuality": "SB_GAMEUSERSETTINGS_LOW",
+            "EnvironmentQuality": "SB_GAMEUSERSETTINGS_LOW",
+            "Lighting": "SB_GAMEUSERSETTINGS_LOW",
             "FoliageQuality": "SB_GAMEUSERSETTINGS_LOW",
-            "AmbientOcclusion": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "AmbientOcclusion": "SB_GAMEUSERSETTINGS_OFF",
             "DepthOfField": "SB_GAMEUSERSETTINGS_OFF",
-            "ScreenSpaceReflection": "SB_GAMEUSERSETTINGS_LOW",
+            "ScreenSpaceReflection": "SB_GAMEUSERSETTINGS_OFF",
             "SceneColorFringeQuality": "SB_GAMEUSERSETTINGS_OFF",
             "GrainQuality": "SB_GAMEUSERSETTINGS_OFF",
-            "MaterialQuality": "SB_GAMEUSERSETTINGS_HIGH",
-            "AntiAliasing": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "MaterialQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "AntiAliasing": "SB_GAMEUSERSETTINGS_LOW",
             "NvidiaDLSS": "SB_GAMEUSERSETTINGS_OFF",
             "NvidiaFrameGeneration": "SB_GAMEUSERSETTINGS_OFF",
             "NvidiaReflexLowLatency": "SB_GAMEUSERSETTINGS_OFF",
-            "AmdFSR3": "SB_GAMEUSERSETTINGS_MEDIUM",
+            "AmdFSR3": "SB_GAMEUSERSETTINGS_VERYHIGH",
             "AmdFrameInterpolation": "SB_GAMEUSERSETTINGS_LOW",
             "IntelXeSS": "SB_GAMEUSERSETTINGS_OFF",
-            "AnimationQuality": "SB_GAMEUSERSETTINGS_HIGH",
+            "AnimationQuality": "SB_GAMEUSERSETTINGS_MEDIUM",
             "CharacterViewDistance": "1.000000",
-            "EnviromentObjectViewDistance": "0.700000",
+            "EnviromentObjectViewDistance": "0.000000",
             "UpscalerType": "SB_GAMEUSERSETTINGS_MEDIUM",
             "SavedNvidiaFrameGeneration": "SB_GAMEUSERSETTINGS_OFF",
             "SavedNvidiaReflexLowLatency": "SB_GAMEUSERSETTINGS_OFF",
@@ -152,7 +152,12 @@ def patch_movie_settings(backups: BackupSet) -> None:
             "r.DepthOfFieldQuality": "0",
             "r.SceneColorFringeQuality": "0",
             "r.Tonemapper.GrainQuantization": "0",
-            "r.Streaming.PoolSize": "4096",
+            "r.FidelityFX.FSR3.Enabled": "1",
+            "r.FidelityFX.FSR3.QualityMode": "3",
+            "r.FidelityFX.FI.Enabled": "1",
+            "r.VSync": "0",
+            "t.MaxFPS": "120",
+            "r.Streaming.PoolSize": "3072",
             "r.Streaming.LimitPoolSizeToVRAM": "1",
         },
     )
@@ -304,9 +309,9 @@ def main() -> int:
         backup = apply()
         print("剑星修复完成：")
         print("  ✓ 应用宝子入口 Retina 2×")
-        print(f"  ✓ 输出分辨率 {WIDTH}×{HEIGHT}，FSR 3 质量模式")
+        print(f"  ✓ 输出分辨率 {WIDTH}×{HEIGHT}，FSR 3 性能模式")
         print("  ✓ FSR 3 插帧开启，目标上限 120 FPS（不锁 60）")
-        print("  ✓ 人物高细节/超高纹理，关闭景深、动态模糊与色差")
+        print("  ✓ 人物高细节/高纹理，其余画质压低以优先保证 60 FPS")
         print("  ✓ 跳过启动影片等待，并启用启动日志")
         print("  ✓ 剑星进程 High-DPI 感知与 8 GB 显存预算")
         print(f"  ✓ 原配置备份：{backup}")

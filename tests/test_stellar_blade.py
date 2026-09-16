@@ -51,6 +51,34 @@ class StellarBladeFixTests(unittest.TestCase):
             self.assertIn("-NoStartupMovies", first)
             self.assertEqual(backups.paths, [config, config])
 
+    def test_m4_performance_profile_keeps_4k_and_prioritizes_character(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "GameUserSettings.ini"
+            engine = Path(temp) / "Engine.ini"
+            config.write_text("[/Script/SB.SBGameUserSettings]\n", encoding="utf-8")
+            backups = FakeBackups()
+            with (
+                mock.patch.object(fix, "USER_SETTINGS", config),
+                mock.patch.object(fix, "ENGINE_INI", engine),
+            ):
+                fix.patch_game_settings(backups)
+                fix.patch_movie_settings(backups)
+
+            settings = config.read_text(encoding="utf-8")
+            self.assertIn("ResolutionSizeX=3840", settings)
+            self.assertIn("ResolutionSizeY=2160", settings)
+            self.assertIn("CharacterObjectDetail=SB_GAMEUSERSETTINGS_HIGH", settings)
+            self.assertIn("CharacterTextures=SB_GAMEUSERSETTINGS_HIGH", settings)
+            self.assertIn("EnviromentObjectDetail=SB_GAMEUSERSETTINGS_LOW", settings)
+            self.assertIn("AmdFSR3=SB_GAMEUSERSETTINGS_VERYHIGH", settings)
+            self.assertIn("AmdFrameInterpolation=SB_GAMEUSERSETTINGS_LOW", settings)
+            self.assertIn("FrameRateLimit=120.000000", settings)
+
+            engine_settings = engine.read_text(encoding="utf-8")
+            self.assertIn("r.FidelityFX.FSR3.QualityMode=3", engine_settings)
+            self.assertIn("r.FidelityFX.FI.Enabled=1", engine_settings)
+            self.assertIn("t.MaxFPS=120", engine_settings)
+
 
 if __name__ == "__main__":
     unittest.main()
