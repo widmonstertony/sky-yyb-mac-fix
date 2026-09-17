@@ -39,12 +39,30 @@ class FakeResponse(io.BytesIO):
 
 
 def make_preferences() -> bytes:
-    names = [b"quality_fps\0", b"kUserPreference_MotionBlurScalar\0"]
-    counts = (2, 0, 0, 0)
-    string_base = 28 + 16
+    names = [
+        b"quality_fps\0",
+        b"kUserPreference_MotionBlurScalar\0",
+        b"kUserPreference_Fullscreen\0",
+    ]
+    counts = (3, 0, 0, 0)
+    string_base = 28 + 24
     header = b"PREF" + b"\0" * 4 + struct.pack("<4I", *counts) + struct.pack("<I", string_base)
-    records = struct.pack("<II", 0, 30) + struct.pack("<II", len(names[0]), 0x3F800000)
+    records = (
+        struct.pack("<II", 0, 30)
+        + struct.pack("<II", len(names[0]), 0x3F800000)
+        + struct.pack("<II", len(names[0]) + len(names[1]), 1)
+    )
     return header + records + b"".join(names)
+
+
+def preference_u32(data: bytes, name: bytes) -> int:
+    count = sum(struct.unpack_from("<4I", data, 8))
+    base = struct.unpack_from("<I", data, 24)[0]
+    for index in range(count):
+        offset, value = struct.unpack_from("<II", data, 28 + index * 8)
+        if data[base + offset:].split(b"\0", 1)[0] == name:
+            return value
+    raise AssertionError(f"missing preference: {name!r}")
 
 
 def make_preferences_without_fps() -> bytes:
@@ -100,7 +118,8 @@ class IntelFixTests(unittest.TestCase):
         self.assertIn('"Win8DpiScaling"=dword:00000001', first_user)
         self.assertIn('"LogPixels"=dword:000000c0', first_system)
         patched_preferences = module.PREFERENCES.read_bytes()
-        self.assertIn(struct.pack("<I", 60), patched_preferences)
+        self.assertEqual(preference_u32(patched_preferences, b"quality_fps"), 60)
+        self.assertEqual(preference_u32(patched_preferences, b"kUserPreference_Fullscreen"), 0)
         self.assertNotEqual(original_preferences, patched_preferences)
         patched_mmkv = module.PUBLIC_MMKV.read_bytes()
         for package in module.RETINA_PACKAGES:

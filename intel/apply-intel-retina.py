@@ -261,6 +261,10 @@ def patched_preferences(fps: int) -> bytes | None:
             found_fps = True
         elif name == "kUserPreference_MotionBlurScalar":
             struct.pack_into("<f", data, record + 4, 0.0)
+        elif name == "kUserPreference_Fullscreen":
+            # Sky's own windowed mode gives Wine a normal macOS titlebar with
+            # close, minimize and fullscreen controls, and survives relaunch.
+            struct.pack_into("<I", data, record + 4, 0)
     if not found_fps:
         return None
     return bytes(data)

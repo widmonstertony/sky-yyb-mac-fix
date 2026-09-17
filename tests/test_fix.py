@@ -27,13 +27,31 @@ def load_module(test_home: Path, applications: Path):
 
 
 def make_preferences() -> bytes:
-    names = [b"quality_fps\0", b"kUserPreference_MotionBlurScalar\0"]
-    counts = (2, 0, 0, 0)
-    string_base = 28 + 16
+    names = [
+        b"quality_fps\0",
+        b"kUserPreference_MotionBlurScalar\0",
+        b"kUserPreference_Fullscreen\0",
+    ]
+    counts = (3, 0, 0, 0)
+    string_base = 28 + 24
     strings = b"".join(names)
     header = b"PREF" + b"\0" * 4 + struct.pack("<4I", *counts) + struct.pack("<I", string_base)
-    records = struct.pack("<II", 0, 30) + struct.pack("<II", len(names[0]), 0x3F800000)
+    records = (
+        struct.pack("<II", 0, 30)
+        + struct.pack("<II", len(names[0]), 0x3F800000)
+        + struct.pack("<II", len(names[0]) + len(names[1]), 1)
+    )
     return header + records + strings
+
+
+def preference_u32(data: bytes, name: bytes) -> int:
+    count = sum(struct.unpack_from("<4I", data, 8))
+    base = struct.unpack_from("<I", data, 24)[0]
+    for index in range(count):
+        offset, value = struct.unpack_from("<II", data, 28 + index * 8)
+        if data[base + offset:].split(b"\0", 1)[0] == name:
+            return value
+    raise AssertionError(f"missing preference: {name!r}")
 
 
 class FixTests(unittest.TestCase):
@@ -87,6 +105,7 @@ class FixTests(unittest.TestCase):
 
     def test_complete_fix_and_restore(self):
         original_user = self.module.USER_REG.read_bytes()
+        original_preferences = self.module.PREFERENCES.read_bytes()
         changes = self.module.apply_fix(60)
         self.assertTrue(changes)
 
@@ -102,9 +121,11 @@ class FixTests(unittest.TestCase):
         self.assertIn(b"gameId=63&autoRun=1", self.shortcut.read_bytes())
 
         prefs = self.module.PREFERENCES.read_bytes()
-        self.assertIn(struct.pack("<I", 60), prefs)
+        self.assertEqual(preference_u32(prefs, b"quality_fps"), 60)
+        self.assertEqual(preference_u32(prefs, b"kUserPreference_Fullscreen"), 0)
         self.module.restore_latest()
         self.assertEqual(self.module.USER_REG.read_bytes(), original_user)
+        self.assertEqual(self.module.PREFERENCES.read_bytes(), original_preferences)
         self.assertNotIn(b"autoRun=1", self.shortcut.read_bytes())
 
     def test_unknown_preferences_are_rejected(self):

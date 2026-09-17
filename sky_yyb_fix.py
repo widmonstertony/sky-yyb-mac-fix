@@ -1066,13 +1066,23 @@ def patch_preferences(backups: BackupSet, fps: int) -> list[str]:
         elif name == "kUserPreference_MotionBlurScalar":
             struct.pack_into("<f", data, record + 4, 0.0)
             found.add(name)
+        elif name == "kUserPreference_Fullscreen":
+            # Use the game's saved windowed mode so YYB/Wine can expose the
+            # native macOS close, minimize and fullscreen titlebar controls.
+            struct.pack_into("<I", data, record + 4, 0)
+            found.add(name)
     if "quality_fps" not in found:
         # The initial PREF only contains first_open_ts and readback settings.
         # Graphics preferences are created after the first successful session.
-        return ["帧率设置待首次成功进入游戏后生成；本次保留偏好文件"]
+        return ["帧率/窗口设置待首次成功进入游戏后生成；退出游戏后重跑 install.command"]
     backups.capture(PREFERENCES)
     atomic_write(PREFERENCES, bytes(data))
-    return [f"光遇目标帧率 {fps} FPS、关闭动态模糊"]
+    window_message = (
+        "、默认窗口化"
+        if "kUserPreference_Fullscreen" in found
+        else "；窗口偏好尚未生成，请在游戏内切换一次窗口化后重跑 install.command"
+    )
+    return [f"光遇目标帧率 {fps} FPS、关闭动态模糊{window_message}"]
 
 
 def apply_fix(fps: int) -> list[str]:
